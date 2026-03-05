@@ -1,3 +1,5 @@
+use dreamusd_sys::DuStatus;
+
 #[derive(Debug, thiserror::Error)]
 pub enum DuError {
     #[error("IO error: {0}")]
@@ -12,23 +14,14 @@ pub enum DuError {
     Vulkan(String),
 }
 
-/// Check a raw status code and convert non-zero values to an error.
-///
-/// Status codes:
-/// - 0: Ok
-/// - 1: ErrIo
-/// - 2: ErrInvalid
-/// - 3: ErrNull
-/// - 4: ErrUsd
-/// - 5: ErrVulkan
-pub(crate) fn check(status: i32) -> Result<(), DuError> {
+/// Check a DuStatus and convert non-Ok values to an error.
+pub(crate) fn check(status: DuStatus) -> Result<(), DuError> {
     match status {
-        0 => Ok(()),
-        1 => Err(DuError::Io(String::new())),
-        2 => Err(DuError::Invalid(String::new())),
-        3 => Err(DuError::Null),
-        4 => Err(DuError::Usd(String::new())),
-        5 => Err(DuError::Vulkan(String::new())),
-        other => Err(DuError::Invalid(format!("unknown status code: {other}"))),
+        DuStatus::Ok => Ok(()),
+        DuStatus::ErrIo => Err(DuError::Io(String::new())),
+        DuStatus::ErrInvalid => Err(DuError::Invalid(String::new())),
+        DuStatus::ErrNull => Err(DuError::Null),
+        DuStatus::ErrUsd => Err(DuError::Usd(String::new())),
+        DuStatus::ErrVulkan => Err(DuError::Vulkan(String::new())),
     }
 }
