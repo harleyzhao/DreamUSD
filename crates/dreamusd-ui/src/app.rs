@@ -1,19 +1,18 @@
 use eframe::egui;
 
 use crate::panels::{HierarchyPanel, PropertiesPanel};
-use dreamusd_core::{Prim, Stage};
+use dreamusd_core::{DisplayMode, HydraEngine, Prim, Stage};
 use dreamusd_render::ViewportCamera;
 
-const DISPLAY_MODES: &[&str] = &[
-    "Smooth Shaded",
-    "Wireframe",
-    "Wireframe on Shaded",
-    "Flat Shaded",
-    "Points",
-    "Textured",
+const DISPLAY_MODES: &[(&str, DisplayMode)] = &[
+    ("Smooth Shaded", DisplayMode::SmoothShaded),
+    ("Wireframe", DisplayMode::Wireframe),
+    ("Wireframe on Shaded", DisplayMode::WireframeOnShaded),
+    ("Flat Shaded", DisplayMode::FlatShaded),
+    ("Points", DisplayMode::Points),
+    ("Textured", DisplayMode::Textured),
 ];
 
-/// Gizmo manipulation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GizmoMode {
     Translate,
@@ -33,6 +32,7 @@ impl GizmoMode {
 
 pub struct DreamUsdApp {
     stage: Option<Stage>,
+    hydra: Option<HydraEngine>,
     hierarchy: HierarchyPanel,
     camera: ViewportCamera,
     current_display_mode: usize,
@@ -40,12 +40,15 @@ pub struct DreamUsdApp {
     show_axis: bool,
     status_message: String,
     gizmo_mode: GizmoMode,
+    viewport_texture: Option<egui::TextureHandle>,
+    hydra_error: Option<String>,
 }
 
 impl Default for DreamUsdApp {
     fn default() -> Self {
         Self {
             stage: None,
+            hydra: None,
             hierarchy: HierarchyPanel::new(),
             camera: ViewportCamera::default(),
             current_display_mode: 0,
@@ -53,14 +56,14 @@ impl Default for DreamUsdApp {
             show_axis: true,
             status_message: "Ready".to_string(),
             gizmo_mode: GizmoMode::Translate,
+            viewport_texture: None,
+            hydra_error: None,
         }
     }
 }
 
 impl DreamUsdApp {
-    // ── File operations ──────────────────────────────────────────────
-
-    pub fn open_file(&mut self) {
+    fn open_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .set_title("Open USD File")
             .add_filter("USD Files", &["usd", "usda", "usdc", "usdz"])
@@ -68,9 +71,24 @@ impl DreamUsdApp {
         {
             match Stage::open(&path) {
                 Ok(stage) => {
+                    // Try to create Hydra engine
+                    match HydraEngine::create(&stage) {
+                        Ok(engine) => {
+                            self.hydra = Some(engine);
+                            self.hydra_error = None;
+                            self.status_message = format!("Opened: {}", path.display());
+                        }
+                        Err(e) => {
+                            self.hydra = None;
+                            self.hydra_error = Some(format!("{}", e));
+                            self.status_message =
+                                format!("Opened (no renderer): {}", path.display());
+                            tracing::warn!("Hydra init failed: {e}");
+                        }
+                    }
                     self.stage = Some(stage);
                     self.hierarchy = HierarchyPanel::new();
-                    self.status_message = format!("Opened: {}", path.display());
+                    self.viewport_texture = None;
                     tracing::info!("Opened file: {}", path.display());
                 }
                 Err(e) => {
@@ -81,22 +99,16 @@ impl DreamUsdApp {
         }
     }
 
-    pub fn save_file(&mut self) {
+    fn save_file(&mut self) {
         if let Some(ref stage) = self.stage {
             match stage.save() {
-                Ok(()) => {
-                    self.status_message = "Saved".to_string();
-                }
-                Err(e) => {
-                    self.status_message = format!("Save failed: {e}");
-                }
+                Ok(()) => self.status_message = "Saved".to_string(),
+                Err(e) => self.status_message = format!("Save failed: {e}"),
             }
-        } else {
-            self.status_message = "No stage to save".to_string();
         }
     }
 
-    pub fn save_file_as(&mut self) {
+    fn save_file_as(&mut self) {
         if let Some(ref stage) = self.stage {
             if let Some(path) = rfd::FileDialog::new()
                 .set_title("Save USD File As")
@@ -104,69 +116,45 @@ impl DreamUsdApp {
                 .save_file()
             {
                 match stage.export(&path) {
-                    Ok(()) => {
-                        self.status_message = format!("Exported to: {}", path.display());
-                    }
-                    Err(e) => {
-                        self.status_message = format!("Export failed: {e}");
-                    }
+                    Ok(()) => self.status_message = format!("Exported to: {}", path.display()),
+                    Err(e) => self.status_message = format!("Export failed: {e}"),
                 }
             }
-        } else {
-            self.status_message = "No stage to export".to_string();
         }
     }
 
-    // ── Undo / Redo ──────────────────────────────────────────────────
-
-    pub fn undo(&mut self) {
+    fn undo(&mut self) {
         if let Some(ref stage) = self.stage {
             match stage.undo() {
-                Ok(()) => {
-                    self.status_message = "Undo".to_string();
-                }
-                Err(e) => {
-                    self.status_message = format!("Undo failed: {e}");
-                }
+                Ok(()) => self.status_message = "Undo".to_string(),
+                Err(e) => self.status_message = format!("Undo failed: {e}"),
             }
         }
     }
 
-    pub fn redo(&mut self) {
+    fn redo(&mut self) {
         if let Some(ref stage) = self.stage {
             match stage.redo() {
-                Ok(()) => {
-                    self.status_message = "Redo".to_string();
-                }
-                Err(e) => {
-                    self.status_message = format!("Redo failed: {e}");
-                }
+                Ok(()) => self.status_message = "Redo".to_string(),
+                Err(e) => self.status_message = format!("Redo failed: {e}"),
             }
         }
     }
 
-    // ── Keyboard shortcuts ───────────────────────────────────────────
-
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let modifiers = ctx.input(|i| i.modifiers);
-
-        ctx.input(|i| {
-            // Ctrl+O → open
-            if i.key_pressed(egui::Key::O) && modifiers.command && !modifiers.shift {
-                // Handled after borrow ends
-            }
-        });
-        // We check individually to avoid borrow issues with &mut self
-        let ctrl_o = ctx.input(|i| i.key_pressed(egui::Key::O) && i.modifiers.command && !i.modifiers.shift);
-        let ctrl_s = ctx.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.command && !i.modifiers.shift);
-        let ctrl_shift_s = ctx.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.command && i.modifiers.shift);
-        let ctrl_z = ctx.input(|i| i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift);
-        let ctrl_shift_z = ctx.input(|i| i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift);
+        let ctrl_o =
+            ctx.input(|i| i.key_pressed(egui::Key::O) && i.modifiers.command && !i.modifiers.shift);
+        let ctrl_s =
+            ctx.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.command && !i.modifiers.shift);
+        let ctrl_shift_s =
+            ctx.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.command && i.modifiers.shift);
+        let ctrl_z =
+            ctx.input(|i| i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift);
+        let ctrl_shift_z =
+            ctx.input(|i| i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift);
         let key_w = ctx.input(|i| i.key_pressed(egui::Key::W) && !i.modifiers.command);
         let key_e = ctx.input(|i| i.key_pressed(egui::Key::E) && !i.modifiers.command);
         let key_r = ctx.input(|i| i.key_pressed(egui::Key::R) && !i.modifiers.command);
-        let key_delete = ctx.input(|i| i.key_pressed(egui::Key::Delete));
-        let key_f = ctx.input(|i| i.key_pressed(egui::Key::F) && !i.modifiers.command);
 
         if ctrl_o {
             self.open_file();
@@ -187,24 +175,44 @@ impl DreamUsdApp {
         } else if key_r {
             self.gizmo_mode = GizmoMode::Scale;
         }
-
-        if key_delete {
-            self.status_message = "Delete: not yet implemented".to_string();
-        }
-
-        if key_f {
-            self.status_message = "Focus: not yet implemented".to_string();
-        }
     }
 
+    fn render_viewport(&mut self, ctx: &egui::Context, rect: egui::Rect) {
+        let w = rect.width().max(1.0) as u32;
+        let h = rect.height().max(1.0) as u32;
+
+        if let Some(ref hydra) = self.hydra {
+            // Update camera
+            let _ = hydra.set_camera(
+                self.camera.eye_as_f64(),
+                self.camera.target_as_f64(),
+                self.camera.up_as_f64(),
+            );
+
+            // Set display mode
+            let (_, mode) = DISPLAY_MODES[self.current_display_mode];
+            let _ = hydra.set_display_mode(mode);
+
+            // Render
+            if hydra.render(w, h).is_ok() {
+                if let Ok((pixels, fw, fh)) = hydra.get_framebuffer() {
+                    let image = egui::ColorImage::from_rgba_unmultiplied(
+                        [fw as usize, fh as usize],
+                        pixels,
+                    );
+                    let texture = ctx.load_texture("viewport", image, egui::TextureOptions::LINEAR);
+                    self.viewport_texture = Some(texture);
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for DreamUsdApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Handle keyboard shortcuts first
         self.handle_shortcuts(ctx);
 
-        // ── Top panel: Menu bar ──────────────────────────────────────
+        // Menu bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -242,25 +250,26 @@ impl eframe::App for DreamUsdApp {
             });
         });
 
-        // ── Bottom panel: Status bar ─────────────────────────────────
+        // Status bar
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&self.status_message);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(self.gizmo_mode.label());
                     ui.separator();
+                    let current_label = DISPLAY_MODES[self.current_display_mode].0;
                     egui::ComboBox::from_id_salt("display_mode")
-                        .selected_text(DISPLAY_MODES[self.current_display_mode])
+                        .selected_text(current_label)
                         .show_ui(ui, |ui| {
-                            for (i, mode) in DISPLAY_MODES.iter().enumerate() {
-                                ui.selectable_value(&mut self.current_display_mode, i, *mode);
+                            for (i, (name, _)) in DISPLAY_MODES.iter().enumerate() {
+                                ui.selectable_value(&mut self.current_display_mode, i, *name);
                             }
                         });
                 });
             });
         });
 
-        // ── Left panel: Scene Hierarchy ──────────────────────────────
+        // Scene hierarchy (left)
         egui::SidePanel::left("scene_hierarchy")
             .default_width(200.0)
             .show(ctx, |ui| {
@@ -269,8 +278,7 @@ impl eframe::App for DreamUsdApp {
                 self.hierarchy.show(ui, self.stage.as_ref());
             });
 
-        // ── Right panel: Properties ──────────────────────────────────
-        // Look up selected prim if we have a stage and a selection
+        // Properties (right)
         let selected_prim: Option<Prim> = (|| {
             let stage = self.stage.as_ref()?;
             let sel_path = self.hierarchy.selected_path.as_deref()?;
@@ -285,16 +293,9 @@ impl eframe::App for DreamUsdApp {
                 PropertiesPanel::show(ui, selected_prim.as_ref());
             });
 
-        // ── Central panel: Viewport ──────────────────────────────────
+        // 3D Viewport (center)
         egui::CentralPanel::default().show(ctx, |ui| {
             let rect = ui.available_rect_before_wrap();
-
-            // Dark background
-            ui.painter().rect_filled(
-                rect,
-                0.0,
-                egui::Color32::from_rgb(30, 30, 30),
-            );
 
             // Handle mouse input for camera
             let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
@@ -308,31 +309,53 @@ impl eframe::App for DreamUsdApp {
                 }
             }
 
-            // Scroll for zoom
             let scroll_delta = ui.input(|i| i.raw_scroll_delta.y);
             if scroll_delta != 0.0 {
                 self.camera.zoom(scroll_delta);
             }
 
-            // Placeholder text
-            let text = if self.stage.is_some() {
-                "Viewport \u{2014} Hydra rendering pending"
-            } else {
-                "No stage loaded"
-            };
+            // Render via Hydra
+            self.render_viewport(ctx, rect);
 
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                text,
-                egui::FontId::proportional(18.0),
-                egui::Color32::from_rgb(140, 140, 140),
-            );
+            // Display the viewport texture or placeholder
+            if let Some(ref tex) = self.viewport_texture {
+                ui.painter().image(
+                    tex.id(),
+                    rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            } else {
+                ui.painter()
+                    .rect_filled(rect, 0.0, egui::Color32::from_rgb(30, 30, 30));
+
+                let text = if self.stage.is_some() {
+                    if let Some(ref err) = self.hydra_error {
+                        format!("Renderer unavailable: {}", err)
+                    } else {
+                        "Initializing renderer...".to_string()
+                    }
+                } else {
+                    "No stage loaded — Ctrl+O to open".to_string()
+                };
+
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    text,
+                    egui::FontId::proportional(16.0),
+                    egui::Color32::from_rgb(140, 140, 140),
+                );
+            }
         });
+
+        // Request continuous repaint when rendering
+        if self.hydra.is_some() {
+            ctx.request_repaint();
+        }
     }
 }
 
-/// Recursively find a prim by path starting from the stage root.
 fn find_prim_recursive(stage: &Stage, target_path: &str) -> Option<Prim> {
     let root = stage.root_prim().ok()?;
     find_in_subtree(root, target_path)
