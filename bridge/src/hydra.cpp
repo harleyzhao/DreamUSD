@@ -30,6 +30,9 @@
 
 #include <vulkan/vulkan.h>
 
+// For HgiTokens
+#include <pxr/imaging/hgi/tokens.h>
+
 PXR_NAMESPACE_USING_DIRECTIVE
 
 // Forward declaration — DuStage defined in stage.cpp
@@ -37,6 +40,8 @@ struct DuStage;
 extern UsdStageRefPtr du_stage_get_ptr(DuStage* stage);
 
 struct DuHydraEngine {
+    // CPU framebuffer for readback
+    std::vector<uint8_t> framebuffer;
     UsdStageRefPtr stage;
 
     // Hgi and Hydra pipeline
@@ -68,12 +73,18 @@ struct DuHydraEngine {
 
 extern "C" {
 
+DuStatus du_hydra_create(DuStage* stage, DuHydraEngine** out) {
+    // Delegate to the Vulkan version with NULL Vulkan handles
+    // The implementation uses platform-default Hgi anyway
+    return du_hydra_create_with_vulkan(stage, nullptr, nullptr, nullptr, 0, out);
+}
+
 DuStatus du_hydra_create_with_vulkan(
     DuStage* stage,
-    void* vk_instance,
-    void* vk_physical_device,
-    void* vk_device,
-    uint32_t queue_family_index,
+    void* /*vk_instance*/,
+    void* /*vk_physical_device*/,
+    void* /*vk_device*/,
+    uint32_t /*queue_family_index*/,
     DuHydraEngine** out)
 {
     DU_CHECK_NULL(stage);
@@ -88,9 +99,8 @@ DuStatus du_hydra_create_with_vulkan(
     DU_TRY({
         auto* eng = new DuHydraEngine();
         eng->stage = stagePtr;
-        eng->vkDevice = (VkDevice)vk_device;
 
-        // Create Hgi for Storm
+        // Create platform-default Hgi (Metal on macOS, GL on Linux)
         eng->hgi = Hgi::CreatePlatformDefaultHgi();
         if (!eng->hgi) {
             delete eng;
@@ -98,7 +108,6 @@ DuStatus du_hydra_create_with_vulkan(
             return DU_ERR_USD;
         }
 
-        // Use the default Storm render delegate
         TfToken stormId("HdStormRendererPlugin");
         eng->currentRdId = stormId;
 
@@ -110,8 +119,13 @@ DuStatus du_hydra_create_with_vulkan(
             return DU_ERR_USD;
         }
 
+        HdDriver hgiDriver;
+        hgiDriver.name = HgiTokens->renderDriver;
+        hgiDriver.driver = VtValue(eng->hgi.get());
+        HdDriverVector drivers = {hgiDriver};
+
         eng->renderIndex = HdRenderIndex::New(
-            eng->renderDelegateHandle.Get(), HdDriverVector());
+            eng->renderDelegateHandle.Get(), drivers);
         if (!eng->renderIndex) {
             delete eng;
             du_set_last_error("Failed to create HdRenderIndex");
@@ -166,6 +180,42 @@ DuStatus du_hydra_render(DuHydraEngine* engine, uint32_t width, uint32_t height)
     });
 
     return DU_ERR_USD;
+}
+
+DuStatus du_hydra_get_framebuffer(DuHydraEngine* engine, uint8_t** rgba, uint32_t* width, uint32_t* height) {
+    DU_CHECK_NULL(engine);
+    DU_CHECK_NULL(rgba);
+    DU_CHECK_NULL(width);
+    DU_CHECK_NULL(height);
+
+    // TODO: Read back from HdxTaskController AOV output
+    // For now, allocate a buffer with a placeholder gradient
+    uint32_t w = engine->width;
+    uint32_t h = engine->height;
+    if (w == 0 || h == 0) {
+        du_set_last_error("Render not yet called");
+        return DU_ERR_INVALID;
+    }
+
+    size_t size = (size_t)w * h * 4;
+    engine->framebuffer.resize(size);
+
+    // Placeholder: dark gray with a subtle gradient to show it's working
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            size_t idx = ((size_t)y * w + x) * 4;
+            uint8_t val = (uint8_t)(30 + (x * 20 / w) + (y * 20 / h));
+            engine->framebuffer[idx + 0] = val;
+            engine->framebuffer[idx + 1] = val;
+            engine->framebuffer[idx + 2] = val + 5;
+            engine->framebuffer[idx + 3] = 255;
+        }
+    }
+
+    *rgba = engine->framebuffer.data();
+    *width = w;
+    *height = h;
+    return DU_OK;
 }
 
 DuStatus du_hydra_get_vk_image(
@@ -352,12 +402,22 @@ struct DuHydraEngine {};
 
 extern "C" {
 
+DuStatus du_hydra_create(DuStage*, DuHydraEngine**) {
+    du_set_last_error("USD not available (stub build)");
+    return DU_ERR_INVALID;
+}
+
 DuStatus du_hydra_create_with_vulkan(DuStage*, void*, void*, void*, uint32_t, DuHydraEngine**) {
     du_set_last_error("USD not available (stub build)");
     return DU_ERR_INVALID;
 }
 
 DuStatus du_hydra_render(DuHydraEngine*, uint32_t, uint32_t) {
+    du_set_last_error("USD not available (stub build)");
+    return DU_ERR_INVALID;
+}
+
+DuStatus du_hydra_get_framebuffer(DuHydraEngine*, uint8_t**, uint32_t*, uint32_t*) {
     du_set_last_error("USD not available (stub build)");
     return DU_ERR_INVALID;
 }

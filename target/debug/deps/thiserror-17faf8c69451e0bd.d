@@ -1,0 +1,12 @@
+/Users/harleyzhao/DreamUSD/target/debug/deps/thiserror-17faf8c69451e0bd.d: /Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs /Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs /Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs /Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs /Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs /Users/harleyzhao/DreamUSD/target/debug/build/thiserror-c60931e4e8dce25d/out/private.rs
+
+/Users/harleyzhao/DreamUSD/target/debug/deps/libthiserror-17faf8c69451e0bd.rmeta: /Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs /Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs /Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs /Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs /Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs /Users/harleyzhao/DreamUSD/target/debug/build/thiserror-c60931e4e8dce25d/out/private.rs
+
+/Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs:
+/Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs:
+/Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs:
+/Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs:
+/Users/harleyzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs:
+/Users/harleyzhao/DreamUSD/target/debug/build/thiserror-c60931e4e8dce25d/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/harleyzhao/DreamUSD/target/debug/build/thiserror-c60931e4e8dce25d/out

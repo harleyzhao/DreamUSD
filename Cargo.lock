@@ -915,7 +915,10 @@ version = "0.1.0"
 dependencies = [
  "dreamusd-core",
  "dreamusd-render",
+ "eframe",
  "egui",
+ "rfd",
+ "tracing",
 ]
 
 [[package]]

@@ -46,12 +46,17 @@ pub struct VkImageInfo {
 }
 
 impl HydraEngine {
+    /// Create a new Hydra engine using platform-default graphics backend.
+    /// Uses Metal on macOS, OpenGL on Linux.
+    pub fn create(stage: &Stage) -> Result<Self, DuError> {
+        let mut raw: *mut dreamusd_sys::DuHydraEngine = ptr::null_mut();
+        unsafe {
+            check(dreamusd_sys::du_hydra_create(stage.raw, &mut raw))?;
+        }
+        Ok(Self { raw })
+    }
+
     /// Create a new Hydra engine bound to the given stage and Vulkan handles.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure the Vulkan handles are valid and remain alive for
-    /// the lifetime of this engine.
     pub fn new(
         stage: &Stage,
         vk_instance: *mut c_void,
@@ -76,6 +81,22 @@ impl HydraEngine {
     /// Render a frame at the given resolution.
     pub fn render(&self, width: u32, height: u32) -> Result<(), DuError> {
         unsafe { check(dreamusd_sys::du_hydra_render(self.raw, width, height)) }
+    }
+
+    /// Get the rendered framebuffer as RGBA pixels (CPU readback).
+    /// Returns (rgba_data, width, height). The data is owned by the engine
+    /// and valid until the next render call.
+    pub fn get_framebuffer(&self) -> Result<(&[u8], u32, u32), DuError> {
+        let mut rgba: *mut u8 = ptr::null_mut();
+        let mut w: u32 = 0;
+        let mut h: u32 = 0;
+        unsafe {
+            check(dreamusd_sys::du_hydra_get_framebuffer(
+                self.raw, &mut rgba, &mut w, &mut h,
+            ))?;
+            let len = (w as usize) * (h as usize) * 4;
+            Ok((std::slice::from_raw_parts(rgba, len), w, h))
+        }
     }
 
     /// Retrieve the Vulkan image produced by the last render pass.

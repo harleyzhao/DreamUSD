@@ -141,6 +141,10 @@ extern "C" {
     ) -> DuStatus;
 
     // --- Hydra ---
+    pub fn du_hydra_create(
+        stage: *mut DuStage,
+        out: *mut *mut DuHydraEngine,
+    ) -> DuStatus;
     pub fn du_hydra_create_with_vulkan(
         stage: *mut DuStage,
         vk_instance: *mut c_void,
@@ -150,6 +154,12 @@ extern "C" {
         out: *mut *mut DuHydraEngine,
     ) -> DuStatus;
     pub fn du_hydra_render(engine: *mut DuHydraEngine, width: u32, height: u32) -> DuStatus;
+    pub fn du_hydra_get_framebuffer(
+        engine: *mut DuHydraEngine,
+        rgba: *mut *mut u8,
+        width: *mut u32,
+        height: *mut u32,
+    ) -> DuStatus;
     pub fn du_hydra_get_vk_image(
         engine: *mut DuHydraEngine,
         image: *mut c_void,
