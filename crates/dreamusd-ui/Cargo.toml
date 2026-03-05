@@ -6,4 +6,7 @@ edition.workspace = true
 [dependencies]
 dreamusd-core = { path = "../dreamusd-core" }
 dreamusd-render = { path = "../dreamusd-render" }
+eframe = { version = "0.31", features = ["wgpu"] }
 egui = "0.31"
+rfd = "0.15"
+tracing = "0.1"
