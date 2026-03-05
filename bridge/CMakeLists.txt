@@ -22,7 +22,8 @@ if(DEFINED ENV{USD_ROOT} OR DEFINED USD_ROOT)
         src/stage.cpp
         src/prim.cpp
         src/transform.cpp
-        src/hydra_stub.cpp
+        src/hydra.cpp
+        src/material.cpp
     )
 
     target_compile_definitions(dreamusd_bridge PRIVATE HAS_USD=1)
@@ -52,7 +53,8 @@ else()
         src/stage.cpp
         src/prim.cpp
         src/transform.cpp
-        src/hydra_stub.cpp
+        src/hydra.cpp
+        src/material.cpp
     )
 
     # No HAS_USD — each .cpp will compile its #else stub path
