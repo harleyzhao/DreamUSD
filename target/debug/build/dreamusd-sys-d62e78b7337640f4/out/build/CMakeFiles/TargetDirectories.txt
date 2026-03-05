@@ -1,7 +1,0 @@
-/Users/harleyzhao/DreamUSD/target/debug/build/dreamusd-sys-d62e78b7337640f4/out/build/CMakeFiles/dreamusd_bridge.dir
-/Users/harleyzhao/DreamUSD/target/debug/build/dreamusd-sys-d62e78b7337640f4/out/build/CMakeFiles/edit_cache.dir
-/Users/harleyzhao/DreamUSD/target/debug/build/dreamusd-sys-d62e78b7337640f4/out/build/CMakeFiles/rebuild_cache.dir
-/Users/harleyzhao/DreamUSD/target/debug/build/dreamusd-sys-d62e78b7337640f4/out/build/CMakeFiles/list_install_components.dir
-/Users/harleyzhao/DreamUSD/target/debug/build/dreamusd-sys-d62e78b7337640f4/out/build/CMakeFiles/install.dir
-/Users/harleyzhao/DreamUSD/target/debug/build/dreamusd-sys-d62e78b7337640f4/out/build/CMakeFiles/install/local.dir
-/Users/harleyzhao/DreamUSD/target/debug/build/dreamusd-sys-d62e78b7337640f4/out/build/CMakeFiles/install/strip.dir

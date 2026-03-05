@@ -1,1 +1,0 @@
-/Users/harleyzhao/DreamUSD/target/debug/libdreamusd_sys.rlib: /Users/harleyzhao/DreamUSD/crates/dreamusd-sys/../../bridge/CMakeLists.txt /Users/harleyzhao/DreamUSD/crates/dreamusd-sys/../../bridge/include /Users/harleyzhao/DreamUSD/crates/dreamusd-sys/../../bridge/src /Users/harleyzhao/DreamUSD/crates/dreamusd-sys/build.rs /Users/harleyzhao/DreamUSD/crates/dreamusd-sys/src/lib.rs

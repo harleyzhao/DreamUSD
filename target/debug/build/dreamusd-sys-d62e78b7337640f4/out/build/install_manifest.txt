@@ -1,2 +1,0 @@
-/Users/harleyzhao/DreamUSD/target/debug/build/dreamusd-sys-d62e78b7337640f4/out/lib/libdreamusd_bridge.a
-/Users/harleyzhao/DreamUSD/target/debug/build/dreamusd-sys-d62e78b7337640f4/out/include/dreamusd_bridge.h
