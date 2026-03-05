@@ -1,2 +1,0 @@
-/usr/bin/ar qc libdreamusd_bridge.a CMakeFiles/dreamusd_bridge.dir/src/error.cpp.o CMakeFiles/dreamusd_bridge.dir/src/stage.cpp.o CMakeFiles/dreamusd_bridge.dir/src/prim.cpp.o CMakeFiles/dreamusd_bridge.dir/src/transform.cpp.o CMakeFiles/dreamusd_bridge.dir/src/hydra.cpp.o CMakeFiles/dreamusd_bridge.dir/src/material.cpp.o
-/usr/bin/ranlib libdreamusd_bridge.a

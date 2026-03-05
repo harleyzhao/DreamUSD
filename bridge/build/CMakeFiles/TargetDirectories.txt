@@ -1,7 +1,0 @@
-/Users/harleyzhao/DreamUSD/bridge/build/CMakeFiles/dreamusd_bridge.dir
-/Users/harleyzhao/DreamUSD/bridge/build/CMakeFiles/edit_cache.dir
-/Users/harleyzhao/DreamUSD/bridge/build/CMakeFiles/rebuild_cache.dir
-/Users/harleyzhao/DreamUSD/bridge/build/CMakeFiles/list_install_components.dir
-/Users/harleyzhao/DreamUSD/bridge/build/CMakeFiles/install.dir
-/Users/harleyzhao/DreamUSD/bridge/build/CMakeFiles/install/local.dir
-/Users/harleyzhao/DreamUSD/bridge/build/CMakeFiles/install/strip.dir

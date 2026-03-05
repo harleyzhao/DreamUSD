@@ -1,0 +1,8 @@
+/target/
+/bridge/build/
+Cargo.lock
+*.o
+*.a
+*.dylib
+*.so
+.DS_Store
