@@ -1,0 +1,7 @@
+[package]
+name = "dreamusd-sys"
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+cmake = "0.1"

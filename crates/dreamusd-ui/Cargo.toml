@@ -1,0 +1,9 @@
+[package]
+name = "dreamusd-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dreamusd-core = { path = "../dreamusd-core" }
+dreamusd-render = { path = "../dreamusd-render" }
+egui = "0.31"

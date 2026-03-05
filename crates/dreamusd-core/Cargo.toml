@@ -1,0 +1,8 @@
+[package]
+name = "dreamusd-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dreamusd-sys = { path = "../dreamusd-sys" }
+thiserror = "2"

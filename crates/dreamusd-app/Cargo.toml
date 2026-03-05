@@ -1,0 +1,12 @@
+[package]
+name = "dreamusd-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dreamusd-core = { path = "../dreamusd-core" }
+dreamusd-render = { path = "../dreamusd-render" }
+dreamusd-ui = { path = "../dreamusd-ui" }
+eframe = { version = "0.31", features = ["wgpu"] }
+tracing-subscriber = "0.3"
+rfd = "0.15"
