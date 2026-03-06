@@ -53,8 +53,11 @@ impl Prim {
             for i in 0..count as usize {
                 result.push(Prim { raw: *out.add(i) });
             }
-            if !out.is_null() && count > 0 {
-                du_free_prim_array(out, count);
+            // Only free the outer array pointer, NOT the individual DuPrim*
+            // — Rust now owns them via the Prim structs in `result`.
+            if !out.is_null() {
+                // Pass count=0 to free only the array, not the elements
+                du_free_prim_array(out, 0);
             }
             Ok(result)
         }

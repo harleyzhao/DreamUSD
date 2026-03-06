@@ -15,6 +15,7 @@
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/sdf/layer.h>
+#include <pxr/usd/usdGeom/tokens.h>
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -74,6 +75,30 @@ DuStatus du_stage_export(DuStage* stage, const char* path) {
         du_set_last_error(std::string("Failed to export to: ") + path);
         return DU_ERR_IO;
     }
+    return DU_OK;
+}
+
+DuStatus du_stage_get_up_axis(DuStage* stage, const char** out) {
+    DU_CHECK_NULL(stage);
+    DU_CHECK_NULL(out);
+
+    // Read upAxis metadata from the stage's root layer
+    TfToken upAxis;
+    if (stage->stage->HasAuthoredMetadata(UsdGeomTokens->upAxis)) {
+        VtValue val;
+        stage->stage->GetMetadata(UsdGeomTokens->upAxis, &val);
+        if (val.IsHolding<TfToken>()) {
+            upAxis = val.UncheckedGet<TfToken>();
+        }
+    }
+
+    static thread_local std::string s_axis;
+    if (upAxis == UsdGeomTokens->z) {
+        s_axis = "Z";
+    } else {
+        s_axis = "Y"; // Default
+    }
+    *out = s_axis.c_str();
     return DU_OK;
 }
 

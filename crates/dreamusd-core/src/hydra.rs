@@ -157,6 +157,39 @@ impl HydraEngine {
         }
     }
 
+    /// Project a 3D world point to 2D screen coordinates using the same
+    /// view/projection matrices as the Hydra render. Returns (screen_x, screen_y)
+    /// in pixel coordinates within the viewport. Returns None if behind camera.
+    pub fn project_point(
+        &self,
+        world_xyz: [f64; 3],
+        viewport_w: u32,
+        viewport_h: u32,
+    ) -> Option<(f64, f64)> {
+        let mut screen_xy = [0.0f64; 2];
+        let status = unsafe {
+            dreamusd_sys::du_hydra_project_point(
+                self.raw,
+                world_xyz.as_ptr(),
+                viewport_w,
+                viewport_h,
+                screen_xy.as_mut_ptr(),
+            )
+        };
+        if status == dreamusd_sys::DuStatus::Ok {
+            Some((screen_xy[0], screen_xy[1]))
+        } else {
+            None
+        }
+    }
+
+    /// Enable or disable shadow rendering.
+    pub fn set_enable_shadows(&self, enable: bool) -> Result<(), DuError> {
+        unsafe {
+            check(dreamusd_sys::du_hydra_set_enable_shadows(self.raw, enable))
+        }
+    }
+
     /// Set the display mode (shading style).
     pub fn set_display_mode(&self, mode: DisplayMode) -> Result<(), DuError> {
         unsafe {

@@ -20,6 +20,7 @@ DuStatus du_stage_open(const char*, DuStage**) { return DU_ERR_INVALID; }
 DuStatus du_stage_create_new(const char*, DuStage**) { return DU_ERR_INVALID; }
 DuStatus du_stage_save(DuStage*) { return DU_ERR_INVALID; }
 DuStatus du_stage_export(DuStage*, const char*) { return DU_ERR_INVALID; }
+DuStatus du_stage_get_up_axis(DuStage*, const char**) { return DU_ERR_INVALID; }
 void     du_stage_destroy(DuStage*) {}
 
 // --- Prim ---
@@ -55,6 +56,7 @@ DuStatus du_hydra_get_vk_image(DuHydraEngine*, void*, void*, uint32_t*, uint32_t
 DuStatus du_hydra_get_render_semaphore(DuHydraEngine*, void*) { return DU_ERR_INVALID; }
 DuStatus du_hydra_set_camera(DuHydraEngine*, double[3], double[3], double[3]) { return DU_ERR_INVALID; }
 DuStatus du_hydra_set_display_mode(DuHydraEngine*, DuDisplayMode) { return DU_ERR_INVALID; }
+DuStatus du_hydra_project_point(DuHydraEngine*, double[3], uint32_t, uint32_t, double[2]) { return DU_ERR_INVALID; }
 void     du_hydra_destroy(DuHydraEngine*) {}
 
 // --- Render Delegates ---

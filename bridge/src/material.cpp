@@ -212,7 +212,7 @@ DuStatus du_material_set_param(DuPrim* material_prim, const char* param_name, co
             input.Set(std::string(value) == "true" || std::string(value) == "1");
         } else if (current.IsHolding<GfVec3f>()) {
             // Parse "x y z" format
-            float x, y, z;
+            float x = 0; float y = 0; float z = 0;
             std::istringstream iss(value);
             iss >> x >> y >> z;
             input.Set(GfVec3f(x, y, z));

@@ -2,6 +2,7 @@ use eframe::egui;
 
 use crate::panels::{HierarchyPanel, PropertiesPanel};
 use dreamusd_core::{DisplayMode, HydraEngine, Prim, Stage};
+use dreamusd_render::glam::Vec3;
 use dreamusd_render::ViewportCamera;
 
 const DISPLAY_MODES: &[(&str, DisplayMode)] = &[
@@ -38,10 +39,15 @@ pub struct DreamUsdApp {
     current_display_mode: usize,
     show_grid: bool,
     show_axis: bool,
+    show_shadows: bool,
     status_message: String,
     gizmo_mode: GizmoMode,
     viewport_texture: Option<egui::TextureHandle>,
     hydra_error: Option<String>,
+    // Gizmo interaction state
+    dragging_axis: Option<usize>, // 0=X, 1=Y, 2=Z
+    drag_start_pos: Option<Vec3>,
+    viewport_rect: egui::Rect,
 }
 
 impl Default for DreamUsdApp {
@@ -54,10 +60,14 @@ impl Default for DreamUsdApp {
             current_display_mode: 0,
             show_grid: true,
             show_axis: true,
+            show_shadows: false,
             status_message: "Ready".to_string(),
             gizmo_mode: GizmoMode::Translate,
             viewport_texture: None,
             hydra_error: None,
+            dragging_axis: None,
+            drag_start_pos: None,
+            viewport_rect: egui::Rect::NOTHING,
         }
     }
 }
@@ -72,6 +82,14 @@ impl DreamUsdApp {
             match Stage::open(&path) {
                 Ok(stage) => {
                     // Try to create Hydra engine
+                    // Configure camera for stage's up axis
+                    let up_axis = stage.up_axis();
+                    if up_axis == "Z" {
+                        self.camera.set_z_up();
+                    } else {
+                        self.camera.set_y_up();
+                    }
+
                     match HydraEngine::create(&stage) {
                         Ok(engine) => {
                             self.hydra = Some(engine);
@@ -177,6 +195,224 @@ impl DreamUsdApp {
         }
     }
 
+    fn draw_axis_gizmo(&self, ui: &egui::Ui, viewport_rect: egui::Rect) {
+        let painter = ui.painter();
+        let axis_len = 40.0_f32;
+        let margin = 50.0_f32;
+        let center = egui::pos2(
+            viewport_rect.left() + margin,
+            viewport_rect.bottom() - margin,
+        );
+
+        // Compute camera-relative axis directions using camera vectors
+        let eye = self.camera.eye;
+        let target = self.camera.target;
+        let up = self.camera.up;
+        let forward = (target - eye).normalize();
+        let right = forward.cross(up).normalize();
+        let cam_up = right.cross(forward).normalize();
+
+        // World axes with colors
+        let world_axes: [(dreamusd_render::glam::Vec3, egui::Color32, &str); 3] = [
+            (dreamusd_render::glam::Vec3::X, egui::Color32::from_rgb(230, 60, 60), "X"),
+            (dreamusd_render::glam::Vec3::Y, egui::Color32::from_rgb(60, 200, 60), "Y"),
+            (dreamusd_render::glam::Vec3::Z, egui::Color32::from_rgb(60, 100, 230), "Z"),
+        ];
+
+        // Sort by depth (draw far axes first)
+        let mut sorted: Vec<_> = world_axes
+            .iter()
+            .map(|(dir, color, label)| {
+                let screen_x = dir.dot(right);
+                let screen_y = dir.dot(cam_up);
+                let depth = dir.dot(forward);
+                (screen_x, screen_y, depth, *color, *label)
+            })
+            .collect();
+        sorted.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+
+        for (sx, sy, _depth, color, label) in &sorted {
+            let end = egui::pos2(
+                center.x + sx * axis_len,
+                center.y - sy * axis_len,
+            );
+            painter.line_segment([center, end], egui::Stroke::new(2.5, *color));
+            painter.text(
+                end,
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(12.0),
+                *color,
+            );
+        }
+    }
+
+    fn get_prim_position(&self, prim: &Prim) -> Option<Vec3> {
+        let mat = prim.get_local_matrix().ok()?;
+        // USD GfMatrix4d is row-major: translation at [12], [13], [14]
+        Some(Vec3::new(mat[12] as f32, mat[13] as f32, mat[14] as f32))
+    }
+
+    /// Project a world-space point to screen coordinates using the Hydra engine's
+    /// exact view/projection matrices for perfect alignment with the rendered scene.
+    fn hydra_project(
+        &self,
+        world_pos: Vec3,
+        rect: egui::Rect,
+    ) -> Option<egui::Pos2> {
+        let hydra = self.hydra.as_ref()?;
+        let w = rect.width().max(1.0) as u32;
+        let h = rect.height().max(1.0) as u32;
+        let (sx, sy) = hydra.project_point(
+            [world_pos.x as f64, world_pos.y as f64, world_pos.z as f64],
+            w, h,
+        )?;
+        Some(egui::pos2(rect.left() + sx as f32, rect.top() + sy as f32))
+    }
+
+    fn draw_translate_gizmo(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        world_pos: Vec3,
+    ) -> Option<usize> {
+        let painter = ui.painter();
+        // Scale axis length based on camera distance so gizmo stays ~120px on screen
+        let cam_dist = (self.camera.eye - world_pos).length();
+        let axis_len = cam_dist * 0.15;
+
+        let axes: [(Vec3, egui::Color32); 3] = [
+            (Vec3::X, egui::Color32::from_rgb(230, 60, 60)),
+            (Vec3::Y, egui::Color32::from_rgb(60, 200, 60)),
+            (Vec3::Z, egui::Color32::from_rgb(60, 100, 230)),
+        ];
+
+        // Use Hydra's projection for perfect alignment with rendered scene
+        let center_2d = self.hydra_project(world_pos, rect)?;
+        let mut hovered_axis = None;
+
+        let mouse_pos = ui.input(|i| i.pointer.hover_pos()).unwrap_or(egui::Pos2::ZERO);
+
+        for (i, (dir, color)) in axes.iter().enumerate() {
+            let end_world = world_pos + *dir * axis_len;
+            if let Some(end_2d) = self.hydra_project(end_world, rect) {
+                // Highlight if mouse is near this axis line
+                let line_vec = end_2d - center_2d;
+                let line_len = line_vec.length();
+                if line_len > 1.0 {
+                    let mouse_vec = mouse_pos - center_2d;
+                    let t = mouse_vec.dot(line_vec) / line_vec.dot(line_vec);
+                    if t > 0.0 && t < 1.0 {
+                        let closest = center_2d + line_vec * t;
+                        let dist = (mouse_pos - closest).length();
+                        if dist < 8.0 {
+                            hovered_axis = Some(i);
+                        }
+                    }
+                }
+
+                let is_active = self.dragging_axis == Some(i) || hovered_axis == Some(i);
+                let stroke_width = if is_active { 4.0 } else { 2.5 };
+                let draw_color = if is_active {
+                    egui::Color32::YELLOW
+                } else {
+                    *color
+                };
+
+                painter.line_segment([center_2d, end_2d], egui::Stroke::new(stroke_width, draw_color));
+
+                // Arrow head
+                let arrow_size = 8.0_f32;
+                let dir_2d = (end_2d - center_2d).normalized();
+                let perp = egui::vec2(-dir_2d.y, dir_2d.x);
+                let tip1 = end_2d - dir_2d * arrow_size + perp * arrow_size * 0.4;
+                let tip2 = end_2d - dir_2d * arrow_size - perp * arrow_size * 0.4;
+                painter.add(egui::Shape::convex_polygon(
+                    vec![end_2d, tip1, tip2],
+                    draw_color,
+                    egui::Stroke::NONE,
+                ));
+
+                // Axis label
+                let labels = ["X", "Y", "Z"];
+                painter.text(
+                    end_2d + dir_2d * 12.0,
+                    egui::Align2::CENTER_CENTER,
+                    labels[i],
+                    egui::FontId::proportional(11.0),
+                    draw_color,
+                );
+            }
+        }
+
+        hovered_axis
+    }
+
+    fn handle_gizmo_drag(
+        &mut self,
+        response: &egui::Response,
+        selected_prim: &Option<Prim>,
+        rect: egui::Rect,
+        hovered_axis: Option<usize>,
+    ) {
+        if self.gizmo_mode != GizmoMode::Translate {
+            return;
+        }
+
+        let prim = match selected_prim {
+            Some(p) => p,
+            None => return,
+        };
+
+        let prim_pos = match self.get_prim_position(prim) {
+            Some(p) => p,
+            None => return,
+        };
+
+        // Start drag
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            if let Some(axis) = hovered_axis {
+                self.dragging_axis = Some(axis);
+                self.drag_start_pos = Some(prim_pos);
+            }
+        }
+
+        // During drag
+        if response.dragged_by(egui::PointerButton::Primary) {
+            if let Some(axis) = self.dragging_axis {
+                let delta = response.drag_delta();
+                let axis_dirs = [Vec3::X, Vec3::Y, Vec3::Z];
+                let axis_dir = axis_dirs[axis];
+
+                // Project axis direction to screen space using Hydra projection
+                if let (Some(p0), Some(p1)) = (
+                    self.hydra_project(prim_pos, rect),
+                    self.hydra_project(prim_pos + axis_dir, rect),
+                ) {
+                    let screen_axis = p1 - p0;
+                    let screen_axis_len = screen_axis.length();
+                    if screen_axis_len > 0.1 {
+                        let screen_dir = screen_axis / screen_axis_len;
+                        let drag_amount = delta.dot(screen_dir) / screen_axis_len;
+
+                        let new_pos = prim_pos + axis_dir * drag_amount;
+                        let _ = prim.set_translate(
+                            new_pos.x as f64,
+                            new_pos.y as f64,
+                            new_pos.z as f64,
+                        );
+                    }
+                }
+            }
+        }
+
+        // End drag
+        if response.drag_stopped() {
+            self.dragging_axis = None;
+            self.drag_start_pos = None;
+        }
+    }
+
     fn render_viewport(&mut self, ctx: &egui::Context, rect: egui::Rect) {
         let w = rect.width().max(1.0) as u32;
         let h = rect.height().max(1.0) as u32;
@@ -189,9 +425,10 @@ impl DreamUsdApp {
                 self.camera.up_as_f64(),
             );
 
-            // Set display mode
+            // Set display mode and shadows
             let (_, mode) = DISPLAY_MODES[self.current_display_mode];
             let _ = hydra.set_display_mode(mode);
+            let _ = hydra.set_enable_shadows(self.show_shadows);
 
             // Render
             if hydra.render(w, h).is_ok() {
@@ -246,6 +483,7 @@ impl eframe::App for DreamUsdApp {
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.show_grid, "Grid");
                     ui.checkbox(&mut self.show_axis, "Axis");
+                    ui.checkbox(&mut self.show_shadows, "Shadows");
                 });
             });
         });
@@ -296,16 +534,27 @@ impl eframe::App for DreamUsdApp {
         // 3D Viewport (center)
         egui::CentralPanel::default().show(ctx, |ui| {
             let rect = ui.available_rect_before_wrap();
+            self.viewport_rect = rect;
 
             // Handle mouse input for camera
             let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
 
-            if response.dragged_by(egui::PointerButton::Middle) {
-                let delta = response.drag_delta();
-                if ui.input(|i| i.modifiers.shift) {
+            let mut hovered_axis = None;
+
+            // Only orbit/pan if not dragging gizmo
+            if self.dragging_axis.is_none() {
+                if response.dragged_by(egui::PointerButton::Secondary) {
+                    let delta = response.drag_delta();
+                    if ui.input(|i| i.modifiers.shift) {
+                        self.camera.pan(delta.x, delta.y);
+                    } else {
+                        self.camera.orbit(delta.x, delta.y);
+                    }
+                }
+
+                if response.dragged_by(egui::PointerButton::Middle) {
+                    let delta = response.drag_delta();
                     self.camera.pan(delta.x, delta.y);
-                } else {
-                    self.camera.orbit(delta.x, delta.y);
                 }
             }
 
@@ -313,6 +562,9 @@ impl eframe::App for DreamUsdApp {
             if scroll_delta != 0.0 {
                 self.camera.zoom(scroll_delta);
             }
+
+            // Handle gizmo drag interaction
+            self.handle_gizmo_drag(&response, &selected_prim, rect, hovered_axis);
 
             // Render via Hydra
             self.render_viewport(ctx, rect);
@@ -322,7 +574,7 @@ impl eframe::App for DreamUsdApp {
                 ui.painter().image(
                     tex.id(),
                     rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Rect::from_min_max(egui::pos2(0.0, 1.0), egui::pos2(1.0, 0.0)),
                     egui::Color32::WHITE,
                 );
             } else {
@@ -346,6 +598,20 @@ impl eframe::App for DreamUsdApp {
                     egui::FontId::proportional(16.0),
                     egui::Color32::from_rgb(140, 140, 140),
                 );
+            }
+
+            // Draw translate gizmo on top of rendered image
+            if self.gizmo_mode == GizmoMode::Translate {
+                if let Some(ref prim) = selected_prim {
+                    if let Some(pos) = self.get_prim_position(prim) {
+                        hovered_axis = self.draw_translate_gizmo(ui, rect, pos);
+                    }
+                }
+            }
+
+            // Draw XYZ axis gizmo in bottom-left corner
+            if self.show_axis {
+                self.draw_axis_gizmo(ui, rect);
             }
         });
 

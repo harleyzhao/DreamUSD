@@ -79,6 +79,7 @@ extern "C" {
     pub fn du_stage_create_new(path: *const c_char, out: *mut *mut DuStage) -> DuStatus;
     pub fn du_stage_save(stage: *mut DuStage) -> DuStatus;
     pub fn du_stage_export(stage: *mut DuStage, path: *const c_char) -> DuStatus;
+    pub fn du_stage_get_up_axis(stage: *mut DuStage, out: *mut *const c_char) -> DuStatus;
     pub fn du_stage_destroy(stage: *mut DuStage);
 
     // --- Prim ---
@@ -181,6 +182,17 @@ extern "C" {
     pub fn du_hydra_set_display_mode(
         engine: *mut DuHydraEngine,
         mode: DuDisplayMode,
+    ) -> DuStatus;
+    pub fn du_hydra_set_enable_shadows(
+        engine: *mut DuHydraEngine,
+        enable: bool,
+    ) -> DuStatus;
+    pub fn du_hydra_project_point(
+        engine: *mut DuHydraEngine,
+        world_xyz: *const f64,
+        viewport_w: u32,
+        viewport_h: u32,
+        screen_xy: *mut f64,
     ) -> DuStatus;
     pub fn du_hydra_destroy(engine: *mut DuHydraEngine);
 

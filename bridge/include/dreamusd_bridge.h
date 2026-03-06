@@ -62,6 +62,8 @@ DuStatus du_stage_open(const char* path, DuStage** out);
 DuStatus du_stage_create_new(const char* path, DuStage** out);
 DuStatus du_stage_save(DuStage* stage);
 DuStatus du_stage_export(DuStage* stage, const char* path);
+// Returns "Y" or "Z" for the stage's up axis. Defaults to "Y" if not set.
+DuStatus du_stage_get_up_axis(DuStage* stage, const char** out);
 void     du_stage_destroy(DuStage* stage);
 
 // --- Prim ---
@@ -117,6 +119,16 @@ DuStatus du_hydra_get_vk_image(
 DuStatus du_hydra_get_render_semaphore(DuHydraEngine* engine, void* semaphore); // VkSemaphore*
 DuStatus du_hydra_set_camera(DuHydraEngine* engine, double eye[3], double target[3], double up[3]);
 DuStatus du_hydra_set_display_mode(DuHydraEngine* engine, DuDisplayMode mode);
+DuStatus du_hydra_set_enable_shadows(DuHydraEngine* engine, bool enable);
+// Project a 3D world point to 2D screen coordinates using the same matrices as the render.
+// Returns screen_xy[0]=x, screen_xy[1]=y in pixel coordinates within the viewport.
+// Returns DU_ERR_INVALID if the point is behind the camera.
+DuStatus du_hydra_project_point(
+    DuHydraEngine* engine,
+    double world_xyz[3],
+    uint32_t viewport_w, uint32_t viewport_h,
+    double screen_xy[2]
+);
 void     du_hydra_destroy(DuHydraEngine* engine);
 
 // --- Render Delegates ---

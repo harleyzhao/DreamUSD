@@ -78,6 +78,17 @@ impl Stage {
         unsafe { check(du_prim_remove(self.raw, c_path.as_ptr())) }
     }
 
+    /// Get the stage's up axis ("Y" or "Z"). Defaults to "Y".
+    pub fn up_axis(&self) -> String {
+        let mut out: *const std::os::raw::c_char = ptr::null();
+        let status = unsafe { du_stage_get_up_axis(self.raw, &mut out) };
+        if status == DuStatus::Ok && !out.is_null() {
+            unsafe { std::ffi::CStr::from_ptr(out).to_string_lossy().into_owned() }
+        } else {
+            "Y".to_string()
+        }
+    }
+
     /// Begin an undo block.
     pub fn undo_begin(&self) -> Result<(), DuError> {
         unsafe { check(du_undo_begin(self.raw)) }

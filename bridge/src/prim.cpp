@@ -139,7 +139,10 @@ DuStatus du_prim_get_type_name(DuPrim* prim, const char** out) {
 DuStatus du_prim_get_path(DuPrim* prim, const char** out) {
     DU_CHECK_NULL(prim);
     DU_CHECK_NULL(out);
-    *out = prim->prim.GetPath().GetText();
+    // GetPath() returns a temporary SdfPath; store the string to keep it alive
+    static thread_local std::string s_path;
+    s_path = prim->prim.GetPath().GetString();
+    *out = s_path.c_str();
     return DU_OK;
 }
 
