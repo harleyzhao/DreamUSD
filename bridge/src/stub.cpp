@@ -50,12 +50,15 @@ DuStatus du_variant_get_selection(DuPrim*, const char*, const char**) { return D
 DuStatus du_variant_set_selection(DuPrim*, const char*, const char*) { return DU_ERR_INVALID; }
 
 // --- Hydra ---
+DuStatus du_hydra_create(DuStage*, DuHydraEngine**) { return DU_ERR_INVALID; }
 DuStatus du_hydra_create_with_vulkan(DuStage*, void*, void*, void*, uint32_t, DuHydraEngine**) { return DU_ERR_INVALID; }
 DuStatus du_hydra_render(DuHydraEngine*, uint32_t, uint32_t) { return DU_ERR_INVALID; }
 DuStatus du_hydra_get_vk_image(DuHydraEngine*, void*, void*, uint32_t*, uint32_t*, uint32_t*) { return DU_ERR_INVALID; }
 DuStatus du_hydra_get_render_semaphore(DuHydraEngine*, void*) { return DU_ERR_INVALID; }
 DuStatus du_hydra_set_camera(DuHydraEngine*, double[3], double[3], double[3]) { return DU_ERR_INVALID; }
 DuStatus du_hydra_set_display_mode(DuHydraEngine*, DuDisplayMode) { return DU_ERR_INVALID; }
+DuStatus du_hydra_set_enable_lighting(DuHydraEngine*, bool) { return DU_ERR_INVALID; }
+DuStatus du_hydra_set_enable_shadows(DuHydraEngine*, bool) { return DU_ERR_INVALID; }
 DuStatus du_hydra_project_point(DuHydraEngine*, double[3], uint32_t, uint32_t, double[2]) { return DU_ERR_INVALID; }
 void     du_hydra_destroy(DuHydraEngine*) {}
 

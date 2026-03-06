@@ -183,6 +183,13 @@ impl HydraEngine {
         }
     }
 
+    /// Enable or disable lighting.
+    pub fn set_enable_lighting(&self, enable: bool) -> Result<(), DuError> {
+        unsafe {
+            check(dreamusd_sys::du_hydra_set_enable_lighting(self.raw, enable))
+        }
+    }
+
     /// Enable or disable shadow rendering.
     pub fn set_enable_shadows(&self, enable: bool) -> Result<(), DuError> {
         unsafe {

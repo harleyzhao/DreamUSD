@@ -161,14 +161,14 @@ DuStatus du_hydra_create_with_vulkan(
             auto domeLight = UsdLuxDomeLight_1::Define(
                 stagePtr, SdfPath("/_DefaultLights/DomeLight"));
             if (domeLight) {
-                domeLight.CreateIntensityAttr(VtValue(0.5f));
+                domeLight.CreateIntensityAttr(VtValue(0.15f));
                 domeLight.CreateColorAttr(VtValue(GfVec3f(0.85f, 0.9f, 1.0f)));
             }
 
             auto keyLight = UsdLuxDistantLight::Define(
                 stagePtr, SdfPath("/_DefaultLights/KeyLight"));
             if (keyLight) {
-                keyLight.CreateIntensityAttr(VtValue(2.5f));
+                keyLight.CreateIntensityAttr(VtValue(4.0f));
                 keyLight.CreateAngleAttr(VtValue(1.0f));
                 keyLight.CreateColorAttr(VtValue(GfVec3f(1.0f, 0.95f, 0.9f)));
                 UsdGeomXformable xf(keyLight.GetPrim());
@@ -249,7 +249,16 @@ DuStatus du_hydra_render(DuHydraEngine* engine, uint32_t width, uint32_t height)
             engine->taskController->SetRenderParams(params);
         }
 
-        // Use USD scene lights (no camera-following light override)
+        // Set up lighting context so Storm properly initializes lighting pipeline
+        {
+            auto lightingCtx = GlfSimpleLightingContext::New();
+            lightingCtx->SetUseLighting(engine->enableLighting);
+            lightingCtx->SetCamera(viewMatrix, frustum.ComputeProjectionMatrix());
+
+            // Don't add extra lights — we use USD scene lights only.
+            // But Storm needs a lighting context to be set for scene lights to work.
+            engine->taskController->SetLightingState(lightingCtx);
+        }
 
         // Enable/disable shadow rendering
         engine->taskController->SetEnableShadows(engine->enableShadows);
@@ -258,6 +267,9 @@ DuStatus du_hydra_render(DuHydraEngine* engine, uint32_t width, uint32_t height)
         engine->engine.SetTaskContextData(
             HdxTokens->selectionState,
             VtValue(engine->selTracker));
+
+        // Sync USD stage changes (attribute edits) into Hydra
+        engine->sceneDelegate->ApplyPendingUpdates();
 
         HdTaskSharedPtrVector tasks = engine->taskController->GetRenderingTasks();
         engine->engine.Execute(engine->renderIndex, &tasks);
@@ -444,6 +456,12 @@ DuStatus du_hydra_set_display_mode(DuHydraEngine* engine, DuDisplayMode mode) {
 
     engine->enableLighting = lighting;
 
+    return DU_OK;
+}
+
+DuStatus du_hydra_set_enable_lighting(DuHydraEngine* engine, bool enable) {
+    DU_CHECK_NULL(engine);
+    engine->enableLighting = enable;
     return DU_OK;
 }
 
@@ -656,6 +674,11 @@ DuStatus du_hydra_set_camera(DuHydraEngine*, double[3], double[3], double[3]) {
 }
 
 DuStatus du_hydra_set_display_mode(DuHydraEngine*, DuDisplayMode) {
+    du_set_last_error("USD not available (stub build)");
+    return DU_ERR_INVALID;
+}
+
+DuStatus du_hydra_set_enable_lighting(DuHydraEngine*, bool) {
     du_set_last_error("USD not available (stub build)");
     return DU_ERR_INVALID;
 }

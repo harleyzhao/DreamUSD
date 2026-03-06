@@ -119,6 +119,7 @@ DuStatus du_hydra_get_vk_image(
 DuStatus du_hydra_get_render_semaphore(DuHydraEngine* engine, void* semaphore); // VkSemaphore*
 DuStatus du_hydra_set_camera(DuHydraEngine* engine, double eye[3], double target[3], double up[3]);
 DuStatus du_hydra_set_display_mode(DuHydraEngine* engine, DuDisplayMode mode);
+DuStatus du_hydra_set_enable_lighting(DuHydraEngine* engine, bool enable);
 DuStatus du_hydra_set_enable_shadows(DuHydraEngine* engine, bool enable);
 // Project a 3D world point to 2D screen coordinates using the same matrices as the render.
 // Returns screen_xy[0]=x, screen_xy[1]=y in pixel coordinates within the viewport.

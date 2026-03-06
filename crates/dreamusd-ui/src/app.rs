@@ -40,6 +40,7 @@ pub struct DreamUsdApp {
     show_grid: bool,
     show_axis: bool,
     show_shadows: bool,
+    show_lights: bool,
     status_message: String,
     gizmo_mode: GizmoMode,
     viewport_texture: Option<egui::TextureHandle>,
@@ -61,6 +62,7 @@ impl Default for DreamUsdApp {
             show_grid: true,
             show_axis: true,
             show_shadows: false,
+            show_lights: true,
             status_message: "Ready".to_string(),
             gizmo_mode: GizmoMode::Translate,
             viewport_texture: None,
@@ -247,6 +249,90 @@ impl DreamUsdApp {
         }
     }
 
+    fn is_light_type(type_name: &str) -> bool {
+        matches!(
+            type_name,
+            "DistantLight" | "DomeLight" | "DomeLight_1" | "SphereLight"
+                | "DiskLight" | "RectLight" | "CylinderLight" | "PortalLight"
+        )
+    }
+
+    fn collect_lights(prim: &Prim, out: &mut Vec<(Vec3, String)>) {
+        if let Ok(type_name) = prim.type_name() {
+            if DreamUsdApp::is_light_type(&type_name) {
+                if let Ok(mat) = prim.get_local_matrix() {
+                    let pos = Vec3::new(mat[12] as f32, mat[13] as f32, mat[14] as f32);
+                    let path = prim.path().unwrap_or_default();
+                    out.push((pos, path));
+                }
+            }
+        }
+        if let Ok(children) = prim.children() {
+            for child in children {
+                DreamUsdApp::collect_lights(&child, out);
+            }
+        }
+    }
+
+    fn draw_light_icons(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        selected_path: Option<&str>,
+    ) {
+        let stage = match self.stage.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+        let root = match stage.root_prim() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        let mut lights = Vec::new();
+        DreamUsdApp::collect_lights(&root, &mut lights);
+
+        let painter = ui.painter();
+
+        for (world_pos, path) in &lights {
+            if let Some(center) = self.hydra_project(*world_pos, rect) {
+                let is_selected = selected_path == Some(path.as_str());
+                let icon_color = if is_selected {
+                    egui::Color32::from_rgb(255, 220, 50)
+                } else {
+                    egui::Color32::from_rgb(255, 200, 60)
+                };
+                let radius = if is_selected { 10.0 } else { 7.0 };
+
+                // Draw sun icon: filled circle + rays
+                painter.circle_filled(center, radius, icon_color);
+                painter.circle_stroke(
+                    center,
+                    radius,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(180, 140, 30)),
+                );
+
+                // Draw rays
+                let ray_len = radius * 0.7;
+                let ray_gap = radius + 2.0;
+                for angle_idx in 0..8 {
+                    let angle = angle_idx as f32 * std::f32::consts::FRAC_PI_4;
+                    let dx = angle.cos();
+                    let dy = angle.sin();
+                    let start = egui::pos2(center.x + dx * ray_gap, center.y + dy * ray_gap);
+                    let end = egui::pos2(
+                        center.x + dx * (ray_gap + ray_len),
+                        center.y + dy * (ray_gap + ray_len),
+                    );
+                    painter.line_segment(
+                        [start, end],
+                        egui::Stroke::new(1.5, icon_color),
+                    );
+                }
+            }
+        }
+    }
+
     fn get_prim_position(&self, prim: &Prim) -> Option<Vec3> {
         let mat = prim.get_local_matrix().ok()?;
         // USD GfMatrix4d is row-major: translation at [12], [13], [14]
@@ -270,33 +356,23 @@ impl DreamUsdApp {
         Some(egui::pos2(rect.left() + sx as f32, rect.top() + sy as f32))
     }
 
-    fn draw_translate_gizmo(
+    /// Detect which gizmo axis the mouse is hovering over (no drawing).
+    fn detect_hovered_axis(
         &self,
         ui: &egui::Ui,
         rect: egui::Rect,
         world_pos: Vec3,
     ) -> Option<usize> {
-        let painter = ui.painter();
-        // Scale axis length based on camera distance so gizmo stays ~120px on screen
         let cam_dist = (self.camera.eye - world_pos).length();
         let axis_len = cam_dist * 0.15;
+        let axes = [Vec3::X, Vec3::Y, Vec3::Z];
 
-        let axes: [(Vec3, egui::Color32); 3] = [
-            (Vec3::X, egui::Color32::from_rgb(230, 60, 60)),
-            (Vec3::Y, egui::Color32::from_rgb(60, 200, 60)),
-            (Vec3::Z, egui::Color32::from_rgb(60, 100, 230)),
-        ];
-
-        // Use Hydra's projection for perfect alignment with rendered scene
         let center_2d = self.hydra_project(world_pos, rect)?;
-        let mut hovered_axis = None;
-
         let mouse_pos = ui.input(|i| i.pointer.hover_pos()).unwrap_or(egui::Pos2::ZERO);
 
-        for (i, (dir, color)) in axes.iter().enumerate() {
+        for (i, dir) in axes.iter().enumerate() {
             let end_world = world_pos + *dir * axis_len;
             if let Some(end_2d) = self.hydra_project(end_world, rect) {
-                // Highlight if mouse is near this axis line
                 let line_vec = end_2d - center_2d;
                 let line_len = line_vec.length();
                 if line_len > 1.0 {
@@ -306,11 +382,40 @@ impl DreamUsdApp {
                         let closest = center_2d + line_vec * t;
                         let dist = (mouse_pos - closest).length();
                         if dist < 8.0 {
-                            hovered_axis = Some(i);
+                            return Some(i);
                         }
                     }
                 }
+            }
+        }
+        None
+    }
 
+    fn draw_translate_gizmo(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        world_pos: Vec3,
+        hovered_axis: Option<usize>,
+    ) {
+        let painter = ui.painter();
+        let cam_dist = (self.camera.eye - world_pos).length();
+        let axis_len = cam_dist * 0.15;
+
+        let axes: [(Vec3, egui::Color32); 3] = [
+            (Vec3::X, egui::Color32::from_rgb(230, 60, 60)),
+            (Vec3::Y, egui::Color32::from_rgb(60, 200, 60)),
+            (Vec3::Z, egui::Color32::from_rgb(60, 100, 230)),
+        ];
+
+        let center_2d = match self.hydra_project(world_pos, rect) {
+            Some(p) => p,
+            None => return,
+        };
+
+        for (i, (dir, color)) in axes.iter().enumerate() {
+            let end_world = world_pos + *dir * axis_len;
+            if let Some(end_2d) = self.hydra_project(end_world, rect) {
                 let is_active = self.dragging_axis == Some(i) || hovered_axis == Some(i);
                 let stroke_width = if is_active { 4.0 } else { 2.5 };
                 let draw_color = if is_active {
@@ -344,8 +449,6 @@ impl DreamUsdApp {
                 );
             }
         }
-
-        hovered_axis
     }
 
     fn handle_gizmo_drag(
@@ -425,9 +528,10 @@ impl DreamUsdApp {
                 self.camera.up_as_f64(),
             );
 
-            // Set display mode and shadows
+            // Set display mode, lighting, and shadows
             let (_, mode) = DISPLAY_MODES[self.current_display_mode];
             let _ = hydra.set_display_mode(mode);
+            let _ = hydra.set_enable_lighting(self.show_lights);
             let _ = hydra.set_enable_shadows(self.show_shadows);
 
             // Render
@@ -483,6 +587,7 @@ impl eframe::App for DreamUsdApp {
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.show_grid, "Grid");
                     ui.checkbox(&mut self.show_axis, "Axis");
+                    ui.checkbox(&mut self.show_lights, "Lights");
                     ui.checkbox(&mut self.show_shadows, "Shadows");
                 });
             });
@@ -539,7 +644,20 @@ impl eframe::App for DreamUsdApp {
             // Handle mouse input for camera
             let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
 
-            let mut hovered_axis = None;
+            // Detect which gizmo axis is hovered (must happen before drag handling)
+            let hovered_axis = if self.gizmo_mode == GizmoMode::Translate {
+                if let Some(ref prim) = selected_prim {
+                    if let Some(pos) = self.get_prim_position(prim) {
+                        self.detect_hovered_axis(ui, rect, pos)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             // Only orbit/pan if not dragging gizmo
             if self.dragging_axis.is_none() {
@@ -600,11 +718,15 @@ impl eframe::App for DreamUsdApp {
                 );
             }
 
+            // Draw light icons in the viewport
+            let sel_path = self.hierarchy.selected_path.as_deref();
+            self.draw_light_icons(ui, rect, sel_path);
+
             // Draw translate gizmo on top of rendered image
             if self.gizmo_mode == GizmoMode::Translate {
                 if let Some(ref prim) = selected_prim {
                     if let Some(pos) = self.get_prim_position(prim) {
-                        hovered_axis = self.draw_translate_gizmo(ui, rect, pos);
+                        self.draw_translate_gizmo(ui, rect, pos, hovered_axis);
                     }
                 }
             }

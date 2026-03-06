@@ -183,6 +183,10 @@ extern "C" {
         engine: *mut DuHydraEngine,
         mode: DuDisplayMode,
     ) -> DuStatus;
+    pub fn du_hydra_set_enable_lighting(
+        engine: *mut DuHydraEngine,
+        enable: bool,
+    ) -> DuStatus;
     pub fn du_hydra_set_enable_shadows(
         engine: *mut DuHydraEngine,
         enable: bool,

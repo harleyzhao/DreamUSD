@@ -64,13 +64,25 @@ impl PropertiesPanel {
                         } else {
                             egui::Grid::new("attr_grid")
                                 .striped(true)
+                                .num_columns(2)
                                 .show(ui, |ui| {
                                     for name in &names {
                                         ui.label(name);
                                         let val = prim
                                             .get_attribute(name)
                                             .unwrap_or_else(|_| "(error)".to_string());
-                                        ui.label(&val);
+                                        let id = ui.make_persistent_id(format!("attr_{name}"));
+                                        let mut edit_val = ui.data(|d| d.get_temp::<String>(id).unwrap_or(val.clone()));
+                                        let response = ui.text_edit_singleline(&mut edit_val);
+                                        if response.changed() {
+                                            ui.data_mut(|d| d.insert_temp(id, edit_val.clone()));
+                                        }
+                                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                            if edit_val != val {
+                                                let _ = prim.set_attribute(name, &edit_val);
+                                            }
+                                            ui.data_mut(|d| d.remove_temp::<String>(id));
+                                        }
                                         ui.end_row();
                                     }
                                 });
