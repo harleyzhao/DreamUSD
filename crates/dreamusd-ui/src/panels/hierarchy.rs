@@ -46,17 +46,45 @@ impl HierarchyPanel {
         }
     }
 
+    /// Return an icon for the prim based on its type and name.
+    fn prim_icon(type_name: &str, name: &str) -> &'static str {
+        // Check name first for default lights (which are Xform type)
+        if name == "KeyLight" { return "☀"; }
+        if name == "FillLight" { return "◑"; }
+        if name == "AmbientLight" { return "○"; }
+
+        match type_name {
+            "Mesh" => "△",
+            "Xform" => "⊞",
+            "Scope" => "▣",
+            "Camera" => "⎚",
+            "Material" | "Shader" => "◆",
+            "DistantLight" => "☀",
+            "DomeLight" | "DomeLight_1" => "◎",
+            "SphereLight" => "●",
+            "RectLight" => "▬",
+            "DiskLight" => "◐",
+            "CylinderLight" => "▮",
+            "Skeleton" | "SkelRoot" => "⚷",
+            "GeomSubset" => "◫",
+            _ if name.contains("Light") || name.contains("light") => "◈",
+            _ if type_name.is_empty() => "·",
+            _ => "□",
+        }
+    }
+
     /// Recursively render a prim and its children as a tree.
     pub fn show_prim_tree(&mut self, ui: &mut egui::Ui, prim: &Prim) {
         let name = prim.name().unwrap_or_else(|_| "???".to_string());
         let path = prim.path().unwrap_or_else(|_| String::new());
         let type_name = prim.type_name().unwrap_or_else(|_| String::new());
 
-        // Build display label
+        // Build display label with icon
+        let icon = Self::prim_icon(&type_name, &name);
         let label = if type_name.is_empty() {
-            name.clone()
+            format!("{icon} {name}")
         } else {
-            format!("{name} ({type_name})")
+            format!("{icon} {name} ({type_name})")
         };
 
         // Apply filter: skip prims whose label doesn't match (unless filter is empty)

@@ -197,6 +197,13 @@ impl HydraEngine {
         }
     }
 
+    /// Enable or disable MSAA anti-aliasing.
+    pub fn set_msaa(&self, enable: bool) -> Result<(), DuError> {
+        unsafe {
+            check(dreamusd_sys::du_hydra_set_msaa(self.raw, enable))
+        }
+    }
+
     /// Set the display mode (shading style).
     pub fn set_display_mode(&self, mode: DisplayMode) -> Result<(), DuError> {
         unsafe {

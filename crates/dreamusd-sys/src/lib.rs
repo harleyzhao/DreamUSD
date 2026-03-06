@@ -191,6 +191,10 @@ extern "C" {
         engine: *mut DuHydraEngine,
         enable: bool,
     ) -> DuStatus;
+    pub fn du_hydra_set_msaa(
+        engine: *mut DuHydraEngine,
+        enable: bool,
+    ) -> DuStatus;
     pub fn du_hydra_project_point(
         engine: *mut DuHydraEngine,
         world_xyz: *const f64,

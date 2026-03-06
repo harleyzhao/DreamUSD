@@ -121,6 +121,7 @@ DuStatus du_hydra_set_camera(DuHydraEngine* engine, double eye[3], double target
 DuStatus du_hydra_set_display_mode(DuHydraEngine* engine, DuDisplayMode mode);
 DuStatus du_hydra_set_enable_lighting(DuHydraEngine* engine, bool enable);
 DuStatus du_hydra_set_enable_shadows(DuHydraEngine* engine, bool enable);
+DuStatus du_hydra_set_msaa(DuHydraEngine* engine, bool enable);
 // Project a 3D world point to 2D screen coordinates using the same matrices as the render.
 // Returns screen_xy[0]=x, screen_xy[1]=y in pixel coordinates within the viewport.
 // Returns DU_ERR_INVALID if the point is behind the camera.

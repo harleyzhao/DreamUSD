@@ -41,6 +41,14 @@
 #include <pxr/usd/usdLux/distantLight.h>
 #include <pxr/usd/usdLux/shadowAPI.h>
 #include <pxr/usd/usdGeom/xformable.h>
+#include <pxr/usd/usdGeom/xform.h>
+#include <pxr/usd/usdGeom/xformCommonAPI.h>
+#include <pxr/imaging/hd/light.h>
+#include <pxr/imaging/hd/repr.h>
+#include <pxr/imaging/hdx/simpleLightTask.h>
+#include <pxr/imaging/hdx/shadowMatrixComputation.h>
+#include <pxr/imaging/glf/simpleShadowArray.h>
+#include <pxr/base/gf/rotation.h>
 
 // For HgiTokens
 #include <pxr/imaging/hgi/tokens.h>
@@ -50,6 +58,93 @@ PXR_NAMESPACE_USING_DIRECTIVE
 // Forward declaration — DuStage defined in stage.cpp
 struct DuStage;
 extern UsdStageRefPtr du_stage_get_ptr(DuStage* stage);
+
+// Shadow matrix computation for distant lights (orthographic projection)
+class DistantLightShadowMatrix : public HdxShadowMatrixComputation {
+public:
+    DistantLightShadowMatrix(const GfVec3d& direction) {
+        GfFrustum frustum;
+        frustum.SetProjectionType(GfFrustum::Orthographic);
+        frustum.SetWindow(GfRange2d(GfVec2d(-100, -100), GfVec2d(100, 100)));
+        frustum.SetNearFar(GfRange1d(0, 1000));
+        GfVec3d dir = direction.GetNormalized();
+        frustum.SetPosition(-dir * 500.0);
+        frustum.SetRotation(GfRotation(GfVec3d(0, 0, -1), dir));
+        _shadowMatrix =
+            frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix();
+    }
+
+    std::vector<GfMatrix4d> Compute(
+            const GfVec4f& viewport,
+            CameraUtilConformWindowPolicy policy) override {
+        return { _shadowMatrix };
+    }
+
+    std::vector<GfMatrix4d> Compute(
+            const CameraUtilFraming& framing,
+            CameraUtilConformWindowPolicy policy) override {
+        return { _shadowMatrix };
+    }
+
+private:
+    GfMatrix4d _shadowMatrix;
+};
+
+// Simple scene delegate for managing default lights with shadow params.
+// This is needed because the Scene Index pipeline in USD 0.26+ bypasses
+// virtual method overrides on UsdImagingDelegate for light params.
+class DefaultLightDelegate : public HdSceneDelegate {
+public:
+    DefaultLightDelegate(HdRenderIndex* renderIndex, SdfPath const& delegateId)
+        : HdSceneDelegate(renderIndex, delegateId) {}
+
+    void AddLight(SdfPath const& id, GlfSimpleLight const& light,
+                  HdxShadowParams const& shadowParams) {
+        GetRenderIndex().InsertSprim(
+            HdPrimTypeTokens->simpleLight, this, id);
+        _cache[id][HdLightTokens->params] = light;
+        _cache[id][HdLightTokens->shadowParams] = shadowParams;
+        _cache[id][HdLightTokens->shadowCollection] =
+            HdRprimCollection(HdTokens->geometry,
+                HdReprSelector(HdReprTokens->refined));
+        _cache[id][HdTokens->transform] = GfMatrix4d(1.0);
+        GetRenderIndex().GetChangeTracker().MarkSprimDirty(
+            id, HdLight::AllDirty);
+    }
+
+    void UpdateLight(SdfPath const& id, GlfSimpleLight const& light,
+                     HdxShadowParams const& shadowParams) {
+        _cache[id][HdLightTokens->params] = light;
+        _cache[id][HdLightTokens->shadowParams] = shadowParams;
+        GetRenderIndex().GetChangeTracker().MarkSprimDirty(
+            id, HdLight::DirtyParams | HdLight::DirtyShadowParams);
+    }
+
+    void RemoveAllLights() {
+        for (auto& entry : _cache) {
+            GetRenderIndex().RemoveSprim(
+                HdPrimTypeTokens->simpleLight, entry.first);
+        }
+        _cache.clear();
+    }
+
+    VtValue Get(SdfPath const& id, TfToken const& key) override {
+        auto it = _cache.find(id);
+        if (it != _cache.end()) {
+            auto valIt = it->second.find(key);
+            if (valIt != it->second.end()) return valIt->second;
+        }
+        return VtValue();
+    }
+
+    VtValue GetLightParamValue(SdfPath const& id,
+                               TfToken const& paramName) override {
+        return Get(id, paramName);
+    }
+
+private:
+    std::map<SdfPath, std::map<TfToken, VtValue>> _cache;
+};
 
 struct DuHydraEngine {
     // CPU framebuffer for readback
@@ -64,6 +159,7 @@ struct DuHydraEngine {
     UsdImagingDelegate* sceneDelegate = nullptr;
     HdxTaskController* taskController = nullptr;
     HdxSelectionTrackerSharedPtr selTracker;
+    DefaultLightDelegate* lightDelegate = nullptr;
     HdEngine engine;
 
     // GPU image output (opaque handles)
@@ -82,6 +178,7 @@ struct DuHydraEngine {
     // Current lighting mode
     bool enableLighting = true;
     bool enableShadows = false;
+    bool hasSceneLights = false;
 
     // Output dimensions
     uint32_t width = 0;
@@ -148,60 +245,134 @@ DuStatus du_hydra_create_with_vulkan(
             return DU_ERR_USD;
         }
 
-        // Add default scene lights before populating the scene delegate
-        bool hasLights = false;
+        // Check if scene has its own lights
+        eng->hasSceneLights = false;
         for (auto prim : stagePtr->Traverse()) {
             if (prim.HasAPI<UsdLuxLightAPI>()) {
-                hasLights = true;
+                eng->hasSceneLights = true;
                 break;
             }
         }
 
-        if (!hasLights) {
-            auto domeLight = UsdLuxDomeLight_1::Define(
-                stagePtr, SdfPath("/_DefaultLights/DomeLight"));
-            if (domeLight) {
-                domeLight.CreateIntensityAttr(VtValue(0.15f));
-                domeLight.CreateColorAttr(VtValue(GfVec3f(0.85f, 0.9f, 1.0f)));
+        // Add default light Xform prims for hierarchy visibility
+        // (actual rendering lights are handled by DefaultLightDelegate)
+        if (!eng->hasSceneLights) {
+            // Create Xform prims so they show in the hierarchy panel
+            // Use XformCommonAPI-compatible ops: translate, rotate, scale
+            UsdGeomXform::Define(stagePtr, SdfPath("/_DefaultLights"));
+
+            {
+                auto keyXf = UsdGeomXform::Define(
+                    stagePtr, SdfPath("/_DefaultLights/KeyLight"));
+                UsdGeomXformCommonAPI api(keyXf.GetPrim());
+                api.SetTranslate(GfVec3d(5, 8, 4));
             }
 
-            auto keyLight = UsdLuxDistantLight::Define(
-                stagePtr, SdfPath("/_DefaultLights/KeyLight"));
-            if (keyLight) {
-                keyLight.CreateIntensityAttr(VtValue(4.0f));
-                keyLight.CreateAngleAttr(VtValue(1.0f));
-                keyLight.CreateColorAttr(VtValue(GfVec3f(1.0f, 0.95f, 0.9f)));
-                UsdGeomXformable xf(keyLight.GetPrim());
-                xf.AddRotateXYZOp().Set(GfVec3f(-45.0f, 30.0f, 0.0f));
-                auto shadowApi = UsdLuxShadowAPI::Apply(keyLight.GetPrim());
-                shadowApi.CreateShadowEnableAttr(VtValue(true));
+            {
+                auto fillXf = UsdGeomXform::Define(
+                    stagePtr, SdfPath("/_DefaultLights/FillLight"));
+                UsdGeomXformCommonAPI api(fillXf.GetPrim());
+                api.SetTranslate(GfVec3d(-6, 4, -3));
             }
 
-            auto fillLight = UsdLuxDistantLight::Define(
-                stagePtr, SdfPath("/_DefaultLights/FillLight"));
-            if (fillLight) {
-                fillLight.CreateIntensityAttr(VtValue(0.8f));
-                fillLight.CreateAngleAttr(VtValue(2.0f));
-                fillLight.CreateColorAttr(VtValue(GfVec3f(0.7f, 0.8f, 1.0f)));
-                UsdGeomXformable xf(fillLight.GetPrim());
-                xf.AddRotateXYZOp().Set(GfVec3f(-20.0f, -120.0f, 0.0f));
-                auto shadowApi = UsdLuxShadowAPI::Apply(fillLight.GetPrim());
-                shadowApi.CreateShadowEnableAttr(VtValue(true));
+            {
+                UsdGeomXform::Define(
+                    stagePtr, SdfPath("/_DefaultLights/AmbientLight"));
             }
         }
 
-        // Populate scene delegate (only once — includes lights added above)
+        // Populate scene delegate
         SdfPath delegateId = SdfPath::AbsoluteRootPath();
         eng->sceneDelegate = new UsdImagingDelegate(
             eng->renderIndex, delegateId);
         eng->sceneDelegate->Populate(stagePtr->GetPseudoRoot());
 
+        // Set up rendering lights via DefaultLightDelegate (with shadow params)
+        if (!eng->hasSceneLights) {
+            eng->lightDelegate = new DefaultLightDelegate(
+                eng->renderIndex, SdfPath("/_DuLights"));
+
+            // Key light — direction from initial position (5,8,4) toward origin
+            {
+                GlfSimpleLight key;
+                GfVec3d pos(5, 8, 4);
+                GfVec3d dir = (-pos).GetNormalized();
+                key.SetPosition(GfVec4f(dir[0], dir[1], dir[2], 0.0f));
+                float intensity = 4.0f;
+                GfVec4f color(1.0f * intensity, 0.95f * intensity,
+                              0.9f * intensity, 1.0f);
+                key.SetDiffuse(color);
+                key.SetSpecular(color);
+                key.SetHasShadow(true);
+
+                HdxShadowParams shadowParams;
+                shadowParams.enabled = true;
+                shadowParams.resolution = 2048;
+                shadowParams.bias = -0.001;
+                shadowParams.blur = 0.1;
+                shadowParams.shadowMatrix =
+                    HdxShadowMatrixComputationSharedPtr(
+                        new DistantLightShadowMatrix(dir));
+
+                eng->lightDelegate->AddLight(
+                    SdfPath("/_DuLights/KeyLight"), key, shadowParams);
+            }
+
+            // Fill light — direction from initial position (-6,4,-3) toward origin
+            {
+                GlfSimpleLight fill;
+                GfVec3d pos(-6, 4, -3);
+                GfVec3d dir = (-pos).GetNormalized();
+                fill.SetPosition(GfVec4f(dir[0], dir[1], dir[2], 0.0f));
+                float intensity = 0.8f;
+                GfVec4f color(0.7f * intensity, 0.8f * intensity,
+                              1.0f * intensity, 1.0f);
+                fill.SetDiffuse(color);
+                fill.SetSpecular(GfVec4f(0, 0, 0, 0));
+                fill.SetHasShadow(false);
+
+                HdxShadowParams noShadow;
+                eng->lightDelegate->AddLight(
+                    SdfPath("/_DuLights/FillLight"), fill, noShadow);
+            }
+
+            // Ambient
+            {
+                GlfSimpleLight ambient;
+                ambient.SetPosition(GfVec4f(0, 1, 0, 0));
+                ambient.SetAmbient(GfVec4f(0.12f, 0.13f, 0.15f, 1.0f));
+                ambient.SetDiffuse(GfVec4f(0, 0, 0, 0));
+                ambient.SetSpecular(GfVec4f(0, 0, 0, 0));
+                ambient.SetHasShadow(false);
+
+                HdxShadowParams noShadow;
+                eng->lightDelegate->AddLight(
+                    SdfPath("/_DuLights/AmbientLight"), ambient, noShadow);
+            }
+        }
+
         SdfPath taskControllerId("/taskController");
         eng->taskController = new HdxTaskController(
             eng->renderIndex, taskControllerId);
 
-        // Configure AOV output for color readback
-        eng->taskController->SetRenderOutputs({HdAovTokens->color});
+        // Configure AOV outputs: color for readback, depth for shadow maps
+        eng->taskController->SetRenderOutputs(
+            {HdAovTokens->color, HdAovTokens->depth});
+
+        // Enable MSAA on color and depth AOVs
+        {
+            HdAovDescriptor colorDesc =
+                eng->taskController->GetRenderOutputSettings(HdAovTokens->color);
+            colorDesc.multiSampled = true;
+            eng->taskController->SetRenderOutputSettings(
+                HdAovTokens->color, colorDesc);
+
+            HdAovDescriptor depthDesc =
+                eng->taskController->GetRenderOutputSettings(HdAovTokens->depth);
+            depthDesc.multiSampled = true;
+            eng->taskController->SetRenderOutputSettings(
+                HdAovTokens->depth, depthDesc);
+        }
 
         // Disable presentation — we read back via AOV, no GL/Metal surface needed
         eng->taskController->SetEnablePresentation(false);
@@ -249,18 +420,15 @@ DuStatus du_hydra_render(DuHydraEngine* engine, uint32_t width, uint32_t height)
             engine->taskController->SetRenderParams(params);
         }
 
-        // Set up lighting context so Storm properly initializes lighting pipeline
+        // Set up lighting context for Storm
         {
             auto lightingCtx = GlfSimpleLightingContext::New();
             lightingCtx->SetUseLighting(engine->enableLighting);
             lightingCtx->SetCamera(viewMatrix, frustum.ComputeProjectionMatrix());
-
-            // Don't add extra lights — we use USD scene lights only.
-            // But Storm needs a lighting context to be set for scene lights to work.
             engine->taskController->SetLightingState(lightingCtx);
         }
 
-        // Enable/disable shadow rendering
+        // Enable/disable shadow task
         engine->taskController->SetEnableShadows(engine->enableShadows);
 
         // Provide selectionState to task context
@@ -270,6 +438,69 @@ DuStatus du_hydra_render(DuHydraEngine* engine, uint32_t width, uint32_t height)
 
         // Sync USD stage changes (attribute edits) into Hydra
         engine->sceneDelegate->ApplyPendingUpdates();
+
+        // Sync default light transforms from Xform prims to rendering lights
+        if (engine->lightDelegate && engine->stage) {
+            auto syncLight = [&](const char* xformPath, const char* lightPath,
+                                 bool hasShadow) {
+                UsdPrim prim = engine->stage->GetPrimAtPath(SdfPath(xformPath));
+                if (!prim) {
+                    fprintf(stderr, "[sync] prim not found: %s\n", xformPath);
+                    return;
+                }
+
+                UsdGeomXformable xf(prim);
+                GfMatrix4d xform;
+                bool resetStack = false;
+                xf.GetLocalTransformation(&xform, &resetStack,
+                                           UsdTimeCode::Default());
+
+                // Get translation from the matrix
+                GfVec3d pos(xform[3][0], xform[3][1], xform[3][2]);
+
+                GfVec3d dir;
+                if (pos.GetLength() > 0.01) {
+                    // Position-based: light points from position toward origin
+                    dir = (-pos).GetNormalized();
+                } else {
+                    // Rotation-based fallback: use -Z axis of rotation matrix
+                    dir = GfVec3d(-xform[2][0], -xform[2][1], -xform[2][2]);
+                    dir.Normalize();
+                }
+
+                GlfSimpleLight light;
+                light.SetPosition(GfVec4f(dir[0], dir[1], dir[2], 0.0f));
+                light.SetHasShadow(hasShadow);
+
+                // Preserve the original light color/intensity
+                // (read from current delegate cache via Get)
+                VtValue oldParams = engine->lightDelegate->Get(
+                    SdfPath(lightPath), HdLightTokens->params);
+                if (oldParams.IsHolding<GlfSimpleLight>()) {
+                    GlfSimpleLight old = oldParams.UncheckedGet<GlfSimpleLight>();
+                    light.SetDiffuse(old.GetDiffuse());
+                    light.SetSpecular(old.GetSpecular());
+                    light.SetAmbient(old.GetAmbient());
+                }
+
+                HdxShadowParams shadowParams;
+                if (hasShadow) {
+                    shadowParams.enabled = true;
+                    shadowParams.resolution = 2048;
+                    shadowParams.bias = -0.001;
+                    shadowParams.blur = 0.1;
+                    shadowParams.shadowMatrix =
+                        HdxShadowMatrixComputationSharedPtr(
+                            new DistantLightShadowMatrix(dir));
+                }
+
+                engine->lightDelegate->UpdateLight(
+                    SdfPath(lightPath), light, shadowParams);
+            };
+
+            syncLight("/_DefaultLights/KeyLight", "/_DuLights/KeyLight", true);
+            syncLight("/_DefaultLights/FillLight", "/_DuLights/FillLight", false);
+        }
 
         HdTaskSharedPtrVector tasks = engine->taskController->GetRenderingTasks();
         engine->engine.Execute(engine->renderIndex, &tasks);
@@ -472,6 +703,22 @@ DuStatus du_hydra_set_enable_shadows(DuHydraEngine* engine, bool enable) {
     return DU_OK;
 }
 
+DuStatus du_hydra_set_msaa(DuHydraEngine* engine, bool enable) {
+    DU_CHECK_NULL(engine);
+
+    HdAovDescriptor colorDesc =
+        engine->taskController->GetRenderOutputSettings(HdAovTokens->color);
+    colorDesc.multiSampled = enable;
+    engine->taskController->SetRenderOutputSettings(HdAovTokens->color, colorDesc);
+
+    HdAovDescriptor depthDesc =
+        engine->taskController->GetRenderOutputSettings(HdAovTokens->depth);
+    depthDesc.multiSampled = enable;
+    engine->taskController->SetRenderOutputSettings(HdAovTokens->depth, depthDesc);
+
+    return DU_OK;
+}
+
 DuStatus du_hydra_project_point(
     DuHydraEngine* engine,
     double world_xyz[3],
@@ -534,6 +781,10 @@ DuStatus du_hydra_project_point(
 void du_hydra_destroy(DuHydraEngine* engine) {
     if (!engine) return;
 
+    if (engine->lightDelegate) {
+        engine->lightDelegate->RemoveAllLights();
+        delete engine->lightDelegate;
+    }
     delete engine->taskController;
     delete engine->sceneDelegate;
     delete engine->renderIndex;

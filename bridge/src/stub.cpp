@@ -59,6 +59,7 @@ DuStatus du_hydra_set_camera(DuHydraEngine*, double[3], double[3], double[3]) { 
 DuStatus du_hydra_set_display_mode(DuHydraEngine*, DuDisplayMode) { return DU_ERR_INVALID; }
 DuStatus du_hydra_set_enable_lighting(DuHydraEngine*, bool) { return DU_ERR_INVALID; }
 DuStatus du_hydra_set_enable_shadows(DuHydraEngine*, bool) { return DU_ERR_INVALID; }
+DuStatus du_hydra_set_msaa(DuHydraEngine*, bool) { return DU_ERR_INVALID; }
 DuStatus du_hydra_project_point(DuHydraEngine*, double[3], uint32_t, uint32_t, double[2]) { return DU_ERR_INVALID; }
 void     du_hydra_destroy(DuHydraEngine*) {}
 

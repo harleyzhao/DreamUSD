@@ -15,6 +15,46 @@ const DISPLAY_MODES: &[(&str, DisplayMode)] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AntiAliasMode {
+    Off,
+    Msaa,
+    Ssaa1_5x,
+    Ssaa2x,
+}
+
+impl AntiAliasMode {
+    fn label(self) -> &'static str {
+        match self {
+            AntiAliasMode::Off => "Off",
+            AntiAliasMode::Msaa => "MSAA",
+            AntiAliasMode::Ssaa1_5x => "SSAA 1.5x",
+            AntiAliasMode::Ssaa2x => "SSAA 2x",
+        }
+    }
+
+    fn all() -> &'static [AntiAliasMode] {
+        &[
+            AntiAliasMode::Off,
+            AntiAliasMode::Msaa,
+            AntiAliasMode::Ssaa1_5x,
+            AntiAliasMode::Ssaa2x,
+        ]
+    }
+
+    fn render_scale(self) -> f32 {
+        match self {
+            AntiAliasMode::Ssaa1_5x => 1.5,
+            AntiAliasMode::Ssaa2x => 2.0,
+            _ => 1.0,
+        }
+    }
+
+    fn uses_msaa(self) -> bool {
+        self == AntiAliasMode::Msaa
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GizmoMode {
     Translate,
     Rotate,
@@ -49,6 +89,7 @@ pub struct DreamUsdApp {
     dragging_axis: Option<usize>, // 0=X, 1=Y, 2=Z
     drag_start_pos: Option<Vec3>,
     viewport_rect: egui::Rect,
+    aa_mode: AntiAliasMode,
 }
 
 impl Default for DreamUsdApp {
@@ -70,7 +111,37 @@ impl Default for DreamUsdApp {
             dragging_axis: None,
             drag_start_pos: None,
             viewport_rect: egui::Rect::NOTHING,
+            aa_mode: AntiAliasMode::Msaa,
         }
+    }
+}
+
+/// Light kind for viewport icon drawing.
+#[derive(Clone, Copy, PartialEq)]
+enum LightKind {
+    Directional, // DistantLight, KeyLight, FillLight — parallel beams
+    Point,       // SphereLight — bulb
+    Dome,        // DomeLight — hemisphere
+    Area,        // RectLight, DiskLight, CylinderLight — rectangle
+}
+
+struct LightInfo {
+    pos: Vec3,
+    path: String,
+    kind: LightKind,
+}
+
+fn light_kind(type_name: &str, name: &str) -> Option<LightKind> {
+    match type_name {
+        "DistantLight" => Some(LightKind::Directional),
+        "DomeLight" | "DomeLight_1" => Some(LightKind::Dome),
+        "SphereLight" | "PortalLight" => Some(LightKind::Point),
+        "RectLight" | "DiskLight" | "CylinderLight" => Some(LightKind::Area),
+        _ => match name {
+            "KeyLight" | "FillLight" => Some(LightKind::Directional),
+            "AmbientLight" => Some(LightKind::Dome),
+            _ => None,
+        },
     }
 }
 
@@ -257,14 +328,14 @@ impl DreamUsdApp {
         )
     }
 
-    fn collect_lights(prim: &Prim, out: &mut Vec<(Vec3, String)>) {
-        if let Ok(type_name) = prim.type_name() {
-            if DreamUsdApp::is_light_type(&type_name) {
-                if let Ok(mat) = prim.get_local_matrix() {
-                    let pos = Vec3::new(mat[12] as f32, mat[13] as f32, mat[14] as f32);
-                    let path = prim.path().unwrap_or_default();
-                    out.push((pos, path));
-                }
+    fn collect_lights(prim: &Prim, out: &mut Vec<LightInfo>) {
+        let type_name = prim.type_name().unwrap_or_default();
+        let name = prim.name().unwrap_or_default();
+        if let Some(kind) = light_kind(&type_name, &name) {
+            if let Ok(mat) = prim.get_local_matrix() {
+                let pos = Vec3::new(mat[12] as f32, mat[13] as f32, mat[14] as f32);
+                let path = prim.path().unwrap_or_default();
+                out.push(LightInfo { pos, path, kind });
             }
         }
         if let Ok(children) = prim.children() {
@@ -294,40 +365,156 @@ impl DreamUsdApp {
 
         let painter = ui.painter();
 
-        for (world_pos, path) in &lights {
-            if let Some(center) = self.hydra_project(*world_pos, rect) {
-                let is_selected = selected_path == Some(path.as_str());
-                let icon_color = if is_selected {
-                    egui::Color32::from_rgb(255, 220, 50)
-                } else {
-                    egui::Color32::from_rgb(255, 200, 60)
-                };
-                let radius = if is_selected { 10.0 } else { 7.0 };
+        for light in &lights {
+            let Some(center) = self.hydra_project(light.pos, rect) else {
+                continue;
+            };
+            let is_selected = selected_path == Some(light.path.as_str());
+            let icon_color = if is_selected {
+                egui::Color32::from_rgb(255, 220, 50)
+            } else {
+                egui::Color32::from_rgb(255, 200, 60)
+            };
+            let outline_color = egui::Color32::from_rgb(180, 140, 30);
+            let stroke = egui::Stroke::new(if is_selected { 2.0 } else { 1.5 }, icon_color);
+            let outline = egui::Stroke::new(1.5, outline_color);
 
-                // Draw sun icon: filled circle + rays
-                painter.circle_filled(center, radius, icon_color);
-                painter.circle_stroke(
-                    center,
-                    radius,
-                    egui::Stroke::new(1.5, egui::Color32::from_rgb(180, 140, 30)),
-                );
+            match light.kind {
+                LightKind::Directional => {
+                    // Parallel beams icon showing light direction
+                    // Direction: from light position toward origin
+                    let dir_3d = if light.pos.length() > 0.01 {
+                        -light.pos.normalize()
+                    } else {
+                        Vec3::new(0.0, -1.0, 0.0)
+                    };
+                    // Project direction to screen
+                    let end_3d = light.pos + dir_3d * 2.0;
+                    let dir_2d = if let Some(end_2d) = self.hydra_project(end_3d, rect) {
+                        (end_2d - center).normalized()
+                    } else {
+                        egui::vec2(0.0, 1.0)
+                    };
+                    let perp = egui::vec2(-dir_2d.y, dir_2d.x);
 
-                // Draw rays
-                let ray_len = radius * 0.7;
-                let ray_gap = radius + 2.0;
-                for angle_idx in 0..8 {
-                    let angle = angle_idx as f32 * std::f32::consts::FRAC_PI_4;
-                    let dx = angle.cos();
-                    let dy = angle.sin();
-                    let start = egui::pos2(center.x + dx * ray_gap, center.y + dy * ray_gap);
-                    let end = egui::pos2(
-                        center.x + dx * (ray_gap + ray_len),
-                        center.y + dy * (ray_gap + ray_len),
+                    // Draw circle (sun body)
+                    let r = if is_selected { 8.0 } else { 6.0 };
+                    painter.circle_filled(center, r, icon_color);
+                    painter.circle_stroke(center, r, outline);
+
+                    // Draw 3 parallel beam lines
+                    let beam_start = r + 3.0;
+                    let beam_len = 18.0;
+                    for offset in [-6.0_f32, 0.0, 6.0] {
+                        let base = center + perp * offset;
+                        let s = base + dir_2d * beam_start;
+                        let e = base + dir_2d * (beam_start + beam_len);
+                        painter.line_segment([s, e], stroke);
+                        // Arrowhead
+                        let arrow = 4.0_f32;
+                        let t1 = e - dir_2d * arrow + perp * arrow * 0.4;
+                        let t2 = e - dir_2d * arrow - perp * arrow * 0.4;
+                        painter.add(egui::Shape::convex_polygon(
+                            vec![e, t1, t2],
+                            icon_color,
+                            egui::Stroke::NONE,
+                        ));
+                    }
+                }
+
+                LightKind::Point => {
+                    // Light bulb icon
+                    let r = if is_selected { 9.0 } else { 7.0 };
+                    // Bulb (circle)
+                    painter.circle_filled(center, r, icon_color);
+                    painter.circle_stroke(center, r, outline);
+                    // Base (small rectangle below)
+                    let base_top = center.y + r * 0.6;
+                    let base_w = r * 0.6;
+                    let base_h = r * 0.5;
+                    painter.rect_filled(
+                        egui::Rect::from_center_size(
+                            egui::pos2(center.x, base_top + base_h * 0.5),
+                            egui::vec2(base_w * 2.0, base_h),
+                        ),
+                        2.0,
+                        outline_color,
                     );
-                    painter.line_segment(
-                        [start, end],
-                        egui::Stroke::new(1.5, icon_color),
-                    );
+                    // Rays
+                    let ray_len = r * 0.6;
+                    let ray_gap = r + 2.0;
+                    for i in 0..6 {
+                        let angle = i as f32 * std::f32::consts::FRAC_PI_3 - std::f32::consts::FRAC_PI_2;
+                        let dx = angle.cos();
+                        let dy = angle.sin();
+                        // Skip rays in the bottom direction (base area)
+                        if dy > 0.5 { continue; }
+                        let s = egui::pos2(center.x + dx * ray_gap, center.y + dy * ray_gap);
+                        let e = egui::pos2(
+                            center.x + dx * (ray_gap + ray_len),
+                            center.y + dy * (ray_gap + ray_len),
+                        );
+                        painter.line_segment([s, e], stroke);
+                    }
+                }
+
+                LightKind::Dome => {
+                    // Hemisphere icon
+                    let r = if is_selected { 12.0 } else { 9.0 };
+                    // Draw arc (top half of circle)
+                    let n_segs = 20;
+                    let mut points = Vec::with_capacity(n_segs + 2);
+                    for i in 0..=n_segs {
+                        let angle = std::f32::consts::PI * (i as f32 / n_segs as f32);
+                        points.push(egui::pos2(
+                            center.x + angle.cos() * r,
+                            center.y - angle.sin() * r,
+                        ));
+                    }
+                    // Close with baseline
+                    let baseline_left = egui::pos2(center.x - r, center.y);
+                    let baseline_right = egui::pos2(center.x + r, center.y);
+                    painter.line_segment([baseline_left, baseline_right], stroke);
+                    // Draw arc segments
+                    for w in points.windows(2) {
+                        painter.line_segment([w[0], w[1]], stroke);
+                    }
+                    // Small downward arrows around the dome
+                    let arrow_len = 6.0_f32;
+                    for i in [0.3, 0.5, 0.7] {
+                        let angle = std::f32::consts::PI * i;
+                        let ax = center.x + angle.cos() * (r + 4.0);
+                        let ay = center.y - angle.sin() * (r + 4.0);
+                        let s = egui::pos2(ax, ay);
+                        let e = egui::pos2(ax, ay + arrow_len);
+                        painter.line_segment([s, e], stroke);
+                        painter.line_segment(
+                            [e, egui::pos2(e.x - 2.0, e.y - 3.0)],
+                            stroke,
+                        );
+                        painter.line_segment(
+                            [e, egui::pos2(e.x + 2.0, e.y - 3.0)],
+                            stroke,
+                        );
+                    }
+                }
+
+                LightKind::Area => {
+                    // Rectangle icon
+                    let w = if is_selected { 16.0 } else { 12.0 };
+                    let h = w * 0.7;
+                    let area_rect = egui::Rect::from_center_size(center, egui::vec2(w, h));
+                    painter.rect_filled(area_rect, 2.0, icon_color);
+                    painter.rect_stroke(area_rect, 2.0, outline, egui::StrokeKind::Outside);
+                    // Rays from center
+                    let ray_len = 8.0_f32;
+                    for angle in [0.0_f32, 0.8, -0.8] {
+                        let dx = angle.sin();
+                        let dy = angle.cos();
+                        let s = egui::pos2(center.x + dx * (h * 0.5 + 2.0), center.y + dy * (h * 0.5 + 2.0));
+                        let e = egui::pos2(center.x + dx * (h * 0.5 + ray_len), center.y + dy * (h * 0.5 + ray_len));
+                        painter.line_segment([s, e], stroke);
+                    }
                 }
             }
         }
@@ -517,8 +704,9 @@ impl DreamUsdApp {
     }
 
     fn render_viewport(&mut self, ctx: &egui::Context, rect: egui::Rect) {
-        let w = rect.width().max(1.0) as u32;
-        let h = rect.height().max(1.0) as u32;
+        let scale = self.aa_mode.render_scale();
+        let w = (rect.width().max(1.0) * scale) as u32;
+        let h = (rect.height().max(1.0) * scale) as u32;
 
         if let Some(ref hydra) = self.hydra {
             // Update camera
@@ -528,19 +716,21 @@ impl DreamUsdApp {
                 self.camera.up_as_f64(),
             );
 
-            // Set display mode, lighting, and shadows
+            // Set display mode, lighting, shadows, and MSAA
             let (_, mode) = DISPLAY_MODES[self.current_display_mode];
             let _ = hydra.set_display_mode(mode);
             let _ = hydra.set_enable_lighting(self.show_lights);
             let _ = hydra.set_enable_shadows(self.show_shadows);
+            let _ = hydra.set_msaa(self.aa_mode.uses_msaa());
 
-            // Render
+            // Render (at potentially higher resolution for SSAA)
             if hydra.render(w, h).is_ok() {
                 if let Ok((pixels, fw, fh)) = hydra.get_framebuffer() {
                     let image = egui::ColorImage::from_rgba_unmultiplied(
                         [fw as usize, fh as usize],
                         pixels,
                     );
+                    // LINEAR filtering handles the downsampling for SSAA
                     let texture = ctx.load_texture("viewport", image, egui::TextureOptions::LINEAR);
                     self.viewport_texture = Some(texture);
                 }
@@ -589,6 +779,15 @@ impl eframe::App for DreamUsdApp {
                     ui.checkbox(&mut self.show_axis, "Axis");
                     ui.checkbox(&mut self.show_lights, "Lights");
                     ui.checkbox(&mut self.show_shadows, "Shadows");
+                    ui.separator();
+                    ui.menu_button(format!("Anti-Aliasing: {}", self.aa_mode.label()), |ui| {
+                        for &mode in AntiAliasMode::all() {
+                            if ui.selectable_label(self.aa_mode == mode, mode.label()).clicked() {
+                                self.aa_mode = mode;
+                                ui.close_menu();
+                            }
+                        }
+                    });
                 });
             });
         });
