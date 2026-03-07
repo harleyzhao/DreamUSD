@@ -10,7 +10,7 @@ use crate::panels::{HierarchyPanel, PropertiesPanel};
 use dreamusd_core::{
     DisplayMode, HydraEngine, Prim, RendererSetting, RendererSettingType, Stage,
 };
-use dreamusd_render::glam::Vec3;
+use dreamusd_render::glam::{EulerRot, Quat, Vec3};
 use dreamusd_render::ViewportCamera;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -83,6 +83,15 @@ impl AntiAliasMode {
     }
 }
 
+impl GizmoSpace {
+    fn label(self) -> &'static str {
+        match self {
+            GizmoSpace::Local => "Local",
+            GizmoSpace::World => "World",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GizmoMode {
     Select,
@@ -92,8 +101,15 @@ pub enum GizmoMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GizmoSpace {
+    Local,
+    World,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GizmoHandle {
     Axis(usize),
+    Plane(usize, usize),
     Center,
 }
 
@@ -147,6 +163,7 @@ pub struct DreamUsdApp {
     dome_light_textures_visible: bool,
     status_message: String,
     gizmo_mode: GizmoMode,
+    gizmo_space: GizmoSpace,
     viewport_texture: Option<ViewportTexture>,
     viewport_texture_size: Option<(u32, u32)>,
     render_state: Option<eframe::egui_wgpu::RenderState>,
@@ -159,6 +176,8 @@ pub struct DreamUsdApp {
     dragging_handle: Option<GizmoHandle>,
     drag_start_pos: Option<Vec3>,
     drag_start_values: Option<[f64; 3]>,
+    drag_start_local_rotation: Option<Quat>,
+    drag_start_world_rotation: Option<Quat>,
     drag_start_pointer: Option<egui::Pos2>,
     drag_screen_dir: Option<egui::Vec2>,
     drag_screen_axis_len: Option<f32>,
@@ -204,6 +223,7 @@ impl Default for DreamUsdApp {
             dome_light_textures_visible: true,
             status_message: "Ready".to_string(),
             gizmo_mode: GizmoMode::Select,
+            gizmo_space: GizmoSpace::Local,
             viewport_texture: None,
             viewport_texture_size: None,
             render_state: None,
@@ -215,6 +235,8 @@ impl Default for DreamUsdApp {
             dragging_handle: None,
             drag_start_pos: None,
             drag_start_values: None,
+            drag_start_local_rotation: None,
+            drag_start_world_rotation: None,
             drag_start_pointer: None,
             drag_screen_dir: None,
             drag_screen_axis_len: None,
@@ -277,6 +299,19 @@ fn light_kind(type_name: &str, name: &str) -> Option<LightKind> {
 }
 
 impl DreamUsdApp {
+    fn set_gizmo_space(&mut self, space: GizmoSpace) {
+        self.gizmo_space = space;
+        self.status_message = format!("Gizmo space: {}", self.effective_gizmo_space().label());
+    }
+
+    fn toggle_gizmo_space(&mut self) {
+        let next = match self.gizmo_space {
+            GizmoSpace::Local => GizmoSpace::World,
+            GizmoSpace::World => GizmoSpace::Local,
+        };
+        self.set_gizmo_space(next);
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, initial_scene: Option<PathBuf>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
         let mut app = Self::default();
@@ -847,6 +882,7 @@ impl DreamUsdApp {
         let key_w = ctx.input(|i| allow_viewport_shortcuts && i.key_pressed(egui::Key::W) && !i.modifiers.command);
         let key_e = ctx.input(|i| allow_viewport_shortcuts && i.key_pressed(egui::Key::E) && !i.modifiers.command);
         let key_r = ctx.input(|i| allow_viewport_shortcuts && i.key_pressed(egui::Key::R) && !i.modifiers.command);
+        let key_x = ctx.input(|i| allow_viewport_shortcuts && i.key_pressed(egui::Key::X) && !i.modifiers.command);
         let key_f = ctx.input(|i| allow_viewport_shortcuts && i.key_pressed(egui::Key::F) && !i.modifiers.command);
         let delete_selected = ctx.input(|i| {
             allow_viewport_shortcuts
@@ -874,6 +910,10 @@ impl DreamUsdApp {
             self.gizmo_mode = GizmoMode::Rotate;
         } else if key_r {
             self.gizmo_mode = GizmoMode::Scale;
+        } else if key_x {
+            if self.gizmo_mode != GizmoMode::Scale {
+                self.toggle_gizmo_space();
+            }
         } else if key_f {
             self.focus_selected_prim();
         } else if delete_selected {
@@ -996,7 +1036,7 @@ impl DreamUsdApp {
                     // Project direction to screen
                     let end_3d = light.pos + dir_3d * 2.0;
                     let dir_2d = if let Some(end_2d) = self.hydra_project(end_3d, rect) {
-                        (end_2d - center).normalized()
+                        Self::normalize_screen_vec(end_2d - center)
                     } else {
                         egui::vec2(0.0, 1.0)
                     };
@@ -1129,7 +1169,7 @@ impl DreamUsdApp {
         selection::prim_position(prim)
     }
 
-    fn gizmo_axes(&self, prim: &Prim) -> [Vec3; 3] {
+    fn local_gizmo_axes(&self, prim: &Prim) -> [Vec3; 3] {
         let fallback = [Vec3::X, Vec3::Y, Vec3::Z];
         let Ok(matrix) = prim.get_world_matrix() else {
             return fallback;
@@ -1148,6 +1188,159 @@ impl DreamUsdApp {
             }
         }
         axes
+    }
+
+    fn effective_gizmo_space(&self) -> GizmoSpace {
+        if self.gizmo_mode == GizmoMode::Scale {
+            GizmoSpace::Local
+        } else {
+            self.gizmo_space
+        }
+    }
+
+    fn gizmo_axes(&self, prim: &Prim) -> [Vec3; 3] {
+        match self.effective_gizmo_space() {
+            GizmoSpace::Local => self.local_gizmo_axes(prim),
+            GizmoSpace::World => [Vec3::X, Vec3::Y, Vec3::Z],
+        }
+    }
+
+    fn canonical_axis(axis: usize) -> Vec3 {
+        match axis {
+            0 => Vec3::X,
+            1 => Vec3::Y,
+            _ => Vec3::Z,
+        }
+    }
+
+    fn plane_handles() -> [(usize, usize); 3] {
+        [(0, 1), (1, 2), (0, 2)]
+    }
+
+    fn quat_from_matrix(matrix: [f64; 16]) -> Option<Quat> {
+        let mut axes = [
+            Vec3::new(matrix[0] as f32, matrix[1] as f32, matrix[2] as f32),
+            Vec3::new(matrix[4] as f32, matrix[5] as f32, matrix[6] as f32),
+            Vec3::new(matrix[8] as f32, matrix[9] as f32, matrix[10] as f32),
+        ];
+        for axis in &mut axes {
+            if axis.length_squared() <= 1.0e-6 {
+                return None;
+            }
+            *axis = axis.normalize();
+        }
+        Some(Quat::from_mat3(&dreamusd_render::glam::Mat3::from_cols(
+            axes[0], axes[1], axes[2],
+        )))
+    }
+
+    fn plane_handle_quad(
+        &self,
+        rect: egui::Rect,
+        world_pos: Vec3,
+        axis_a: Vec3,
+        axis_b: Vec3,
+        axis_len: f32,
+    ) -> Option<[egui::Pos2; 4]> {
+        let inner = axis_len * 0.18;
+        let outer = axis_len * 0.38;
+        Some([
+            self.hydra_project(world_pos + axis_a * inner + axis_b * inner, rect)?,
+            self.hydra_project(world_pos + axis_a * outer + axis_b * inner, rect)?,
+            self.hydra_project(world_pos + axis_a * outer + axis_b * outer, rect)?,
+            self.hydra_project(world_pos + axis_a * inner + axis_b * outer, rect)?,
+        ])
+    }
+
+    fn plane_screen_basis(
+        &self,
+        rect: egui::Rect,
+        world_pos: Vec3,
+        axis_a: Vec3,
+        axis_b: Vec3,
+        axis_len: f32,
+    ) -> Option<(egui::Vec2, egui::Vec2)> {
+        let center = self.hydra_project(world_pos, rect)?;
+        let axis_a_end = self.hydra_project(world_pos + axis_a * axis_len, rect)?;
+        let axis_b_end = self.hydra_project(world_pos + axis_b * axis_len, rect)?;
+        Some((axis_a_end - center, axis_b_end - center))
+    }
+
+    fn point_in_triangle(
+        point: egui::Pos2,
+        a: egui::Pos2,
+        b: egui::Pos2,
+        c: egui::Pos2,
+    ) -> bool {
+        let sign = |p1: egui::Pos2, p2: egui::Pos2, p3: egui::Pos2| {
+            (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y)
+        };
+        let d1 = sign(point, a, b);
+        let d2 = sign(point, b, c);
+        let d3 = sign(point, c, a);
+        let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+        let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+        !(has_neg && has_pos)
+    }
+
+    fn point_in_quad(point: egui::Pos2, quad: &[egui::Pos2; 4]) -> bool {
+        Self::point_in_triangle(point, quad[0], quad[1], quad[2])
+            || Self::point_in_triangle(point, quad[0], quad[2], quad[3])
+    }
+
+    fn normalize_screen_vec(vec: egui::Vec2) -> egui::Vec2 {
+        let len = vec.length();
+        if len > 1.0e-4 {
+            vec / len
+        } else {
+            egui::Vec2::ZERO
+        }
+    }
+
+    fn solve_plane_drag(
+        &self,
+        axis_a_screen: egui::Vec2,
+        axis_b_screen: egui::Vec2,
+        pointer_delta: egui::Vec2,
+    ) -> Option<(f32, f32)> {
+        let det = axis_a_screen.x * axis_b_screen.y - axis_a_screen.y * axis_b_screen.x;
+        if det.abs() <= 1.0e-4 {
+            return None;
+        }
+        let u = (pointer_delta.x * axis_b_screen.y - pointer_delta.y * axis_b_screen.x) / det;
+        let v = (axis_a_screen.x * pointer_delta.y - axis_a_screen.y * pointer_delta.x) / det;
+        Some((u, v))
+    }
+
+    fn apply_axis_rotation(&self, prim: &Prim, axis: usize, angle_deg: f32) {
+        let Some(local_start) = self
+            .drag_start_local_rotation
+            .or_else(|| prim.get_local_matrix().ok().and_then(Self::quat_from_matrix))
+        else {
+            return;
+        };
+
+        let angle_radians = angle_deg.to_radians();
+        let new_local = match self.effective_gizmo_space() {
+            GizmoSpace::Local => {
+                let local_delta = Quat::from_axis_angle(Self::canonical_axis(axis), angle_radians);
+                (local_start * local_delta).normalize()
+            }
+            GizmoSpace::World => {
+                let Some(world_start) = self
+                    .drag_start_world_rotation
+                    .or_else(|| prim.get_world_matrix().ok().and_then(Self::quat_from_matrix))
+                else {
+                    return;
+                };
+                let world_delta = Quat::from_axis_angle(Self::canonical_axis(axis), angle_radians);
+                let parent_world = (world_start * local_start.inverse()).normalize();
+                (parent_world.inverse() * (world_delta * world_start)).normalize()
+            }
+        };
+
+        let (x, y, z) = new_local.to_euler(EulerRot::XYZ);
+        let _ = prim.set_rotate(x.to_degrees() as f64, y.to_degrees() as f64, z.to_degrees() as f64);
     }
 
     /// Project a world-space point to screen coordinates using the Hydra engine's
@@ -1187,6 +1380,22 @@ impl DreamUsdApp {
             if center_rect.contains(mouse_pos) {
                 return Some(GizmoHandle::Center);
             }
+
+            for (axis_a, axis_b) in Self::plane_handles() {
+                if let Some(quad) = self.plane_handle_quad(
+                    rect,
+                    world_pos,
+                    axis_dirs[axis_a],
+                    axis_dirs[axis_b],
+                    axis_len,
+                ) {
+                    let edge_hit = Self::distance_to_polyline(mouse_pos, &quad, true)
+                        .is_some_and(|distance| distance < 6.0);
+                    if Self::point_in_quad(mouse_pos, &quad) || edge_hit {
+                        return Some(GizmoHandle::Plane(axis_a, axis_b));
+                    }
+                }
+            }
         }
 
         for (i, dir) in axis_dirs.iter().enumerate() {
@@ -1202,7 +1411,7 @@ impl DreamUsdApp {
                     GizmoMode::Rotate => self
                         .projected_rotation_ring(rect, world_pos, axis_dirs, i, axis_len)
                         .and_then(|points| Self::distance_to_polyline(mouse_pos, &points, true))
-                        .is_some_and(|distance| distance < 8.0),
+                        .is_some_and(|distance| distance < 10.0),
                     GizmoMode::Scale => {
                         egui::Rect::from_center_size(end_2d, egui::vec2(12.0, 12.0))
                             .contains(mouse_pos)
@@ -1335,6 +1544,34 @@ impl DreamUsdApp {
             },
         );
 
+        for (axis_a, axis_b) in Self::plane_handles() {
+            if let Some(quad) = self.plane_handle_quad(
+                rect,
+                world_pos,
+                axis_dirs[axis_a],
+                axis_dirs[axis_b],
+                axis_len,
+            ) {
+                let is_active = self.dragging_handle == Some(GizmoHandle::Plane(axis_a, axis_b))
+                    || hovered_handle == Some(GizmoHandle::Plane(axis_a, axis_b));
+                let plane_color = match (axis_a, axis_b) {
+                    (0, 1) => egui::Color32::from_rgba_unmultiplied(235, 210, 72, if is_active { 112 } else { 72 }),
+                    (1, 2) => egui::Color32::from_rgba_unmultiplied(72, 225, 160, if is_active { 112 } else { 72 }),
+                    _ => egui::Color32::from_rgba_unmultiplied(120, 170, 255, if is_active { 112 } else { 72 }),
+                };
+                let stroke_color = if is_active {
+                    egui::Color32::YELLOW
+                } else {
+                    plane_color.gamma_multiply(1.8)
+                };
+                painter.add(egui::Shape::convex_polygon(
+                    quad.to_vec(),
+                    plane_color,
+                    egui::Stroke::new(if is_active { 2.0 } else { 1.0 }, stroke_color),
+                ));
+            }
+        }
+
         for (i, (dir, color)) in axes.iter().enumerate() {
             let end_world = world_pos + *dir * axis_len;
             if let Some(end_2d) = self.hydra_project(end_world, rect) {
@@ -1351,7 +1588,7 @@ impl DreamUsdApp {
 
                 // Arrow head
                 let arrow_size = 8.0_f32;
-                let dir_2d = (end_2d - center_2d).normalized();
+                let dir_2d = Self::normalize_screen_vec(end_2d - center_2d);
                 let perp = egui::vec2(-dir_2d.y, dir_2d.x);
                 let tip1 = end_2d - dir_2d * arrow_size + perp * arrow_size * 0.4;
                 let tip2 = end_2d - dir_2d * arrow_size - perp * arrow_size * 0.4;
@@ -1520,6 +1757,36 @@ impl DreamUsdApp {
             );
         }
 
+        for (axis_a, axis_b) in Self::plane_handles() {
+            if let Some(quad) = self.plane_handle_quad(
+                rect,
+                world_pos,
+                axis_dirs[axis_a],
+                axis_dirs[axis_b],
+                axis_len,
+            ) {
+                let is_active = self.dragging_handle == Some(GizmoHandle::Plane(axis_a, axis_b))
+                    || hovered_handle == Some(GizmoHandle::Plane(axis_a, axis_b));
+                painter.add(egui::Shape::convex_polygon(
+                    quad.to_vec(),
+                    egui::Color32::from_rgba_unmultiplied(
+                        220,
+                        220,
+                        220,
+                        if is_active { 80 } else { 44 },
+                    ),
+                    egui::Stroke::new(
+                        if is_active { 2.0 } else { 1.0 },
+                        if is_active {
+                            egui::Color32::YELLOW
+                        } else {
+                            egui::Color32::from_gray(210)
+                        },
+                    ),
+                ));
+            }
+        }
+
         for (i, (dir, color)) in axes.iter().enumerate() {
             if let Some((center_2d, end_2d)) =
                 self.axis_screen_segment(rect, world_pos, *dir, axis_len)
@@ -1544,7 +1811,7 @@ impl DreamUsdApp {
                     draw_color,
                 );
                 painter.text(
-                    end_2d + (end_2d - center_2d).normalized() * 14.0,
+                    end_2d + Self::normalize_screen_vec(end_2d - center_2d) * 14.0,
                     egui::Align2::CENTER_CENTER,
                     ["X", "Y", "Z"][i],
                     egui::FontId::proportional(11.0),
@@ -1609,6 +1876,10 @@ impl DreamUsdApp {
             GizmoHandle::Axis(0) => "X",
             GizmoHandle::Axis(1) => "Y",
             GizmoHandle::Axis(2) => "Z",
+            GizmoHandle::Plane(0, 1) => "XY",
+            GizmoHandle::Plane(1, 2) => "YZ",
+            GizmoHandle::Plane(0, 2) => "XZ",
+            GizmoHandle::Plane(_, _) => "Plane",
             GizmoHandle::Center => "Center",
             GizmoHandle::Axis(_) => "Axis",
         };
@@ -1618,7 +1889,10 @@ impl DreamUsdApp {
             GizmoMode::Rotate => "Rotate",
             GizmoMode::Scale => "Scale",
         };
-        let overlay_text = format!("{mode_text} {handle_text}  {value_text}");
+        let overlay_text = format!(
+            "{mode_text} {handle_text} [{}]  {value_text}",
+            self.effective_gizmo_space().label()
+        );
 
         let painter = ui.painter();
         let galley = painter.layout_no_wrap(
@@ -1681,6 +1955,17 @@ impl DreamUsdApp {
                         self.gizmo_drag_amount(rect, prim_pos, axis_dirs[axis])
                             .unwrap_or((1.0, 1.0, egui::vec2(1.0, 0.0)))
                     }
+                    GizmoHandle::Plane(axis_a, axis_b) => {
+                        let axis_len = self.gizmo_axis_length(prim_pos);
+                        let (axis_a_screen, axis_b_screen) = self
+                            .plane_screen_basis(rect, prim_pos, axis_dirs[axis_a], axis_dirs[axis_b], axis_len)
+                            .unwrap_or((egui::vec2(1.0, 0.0), egui::vec2(0.0, 1.0)));
+                        let diagonal = Self::normalize_screen_vec(
+                            Self::normalize_screen_vec(axis_a_screen)
+                                + Self::normalize_screen_vec(axis_b_screen),
+                        );
+                        (axis_len, diagonal.length().max(1.0), diagonal)
+                    }
                     GizmoHandle::Center => (1.0, 1.0, egui::vec2(1.0, 0.0)),
                 };
                 self.dragging_handle = Some(handle);
@@ -1691,6 +1976,14 @@ impl DreamUsdApp {
                     GizmoMode::Rotate => prim.get_rotate().ok(),
                     GizmoMode::Scale => prim.get_scale().ok(),
                 };
+                self.drag_start_local_rotation = prim
+                    .get_local_matrix()
+                    .ok()
+                    .and_then(Self::quat_from_matrix);
+                self.drag_start_world_rotation = prim
+                    .get_world_matrix()
+                    .ok()
+                    .and_then(Self::quat_from_matrix);
                 self.drag_start_pointer = response.interact_pointer_pos();
                 self.drag_screen_dir = Some(screen_dir);
                 self.drag_screen_axis_len = Some(screen_axis_len);
@@ -1767,12 +2060,7 @@ impl DreamUsdApp {
                                                     Self::snap_rotation_degrees(drag_amount_deg as f64)
                                                         as f32;
                                             }
-                                            let start = self.drag_start_values.unwrap_or_else(|| {
-                                                prim.get_rotate().unwrap_or([0.0, 0.0, 0.0])
-                                            });
-                                            let mut next = start;
-                                            next[axis] = start[axis] + drag_amount_deg as f64;
-                                            let _ = prim.set_rotate(next[0], next[1], next[2]);
+                                            self.apply_axis_rotation(prim, axis, drag_amount_deg);
                                         }
                                     }
                                 }
@@ -1789,6 +2077,63 @@ impl DreamUsdApp {
                                     next[axis] = (start[axis] * factor).max(0.001);
                                     let _ = prim.set_scale(next[0], next[1], next[2]);
                                 }
+                            }
+                        }
+                    }
+                    GizmoHandle::Plane(axis_a, axis_b) => {
+                        let reference_pos = self.drag_start_pos.unwrap_or(prim_pos);
+                        let axis_len = self
+                            .drag_world_axis_len
+                            .unwrap_or_else(|| self.gizmo_axis_length(reference_pos));
+                        if let Some((screen_a, screen_b)) = self.plane_screen_basis(
+                            rect,
+                            reference_pos,
+                            axis_dirs[axis_a],
+                            axis_dirs[axis_b],
+                            axis_len,
+                        ) {
+                            match self.gizmo_mode {
+                                GizmoMode::Translate => {
+                                    if let Some((mut u, mut v)) =
+                                        self.solve_plane_drag(screen_a, screen_b, pointer_delta)
+                                    {
+                                        u *= axis_len;
+                                        v *= axis_len;
+                                        if snap {
+                                            u = Self::snap_translate_amount(u);
+                                            v = Self::snap_translate_amount(v);
+                                        }
+                                        let start_pos = self.drag_start_pos.unwrap_or(reference_pos);
+                                        let new_pos =
+                                            start_pos + axis_dirs[axis_a] * u + axis_dirs[axis_b] * v;
+                                        let _ = prim.set_translate_world(
+                                            new_pos.x as f64,
+                                            new_pos.y as f64,
+                                            new_pos.z as f64,
+                                        );
+                                    }
+                                }
+                                GizmoMode::Scale => {
+                                    let diag_dir = Self::normalize_screen_vec(
+                                        Self::normalize_screen_vec(screen_a)
+                                            + Self::normalize_screen_vec(screen_b),
+                                    );
+                                    if diag_dir != egui::Vec2::ZERO {
+                                        let amount = pointer_delta.dot(diag_dir) * 0.01;
+                                        let start = self.drag_start_values.unwrap_or_else(|| {
+                                            prim.get_scale().unwrap_or([1.0, 1.0, 1.0])
+                                        });
+                                        let mut factor = f64::exp(amount as f64).max(0.001);
+                                        if snap {
+                                            factor = Self::snap_scale_factor(factor);
+                                        }
+                                        let mut next = start;
+                                        next[axis_a] = (start[axis_a] * factor).max(0.001);
+                                        next[axis_b] = (start[axis_b] * factor).max(0.001);
+                                        let _ = prim.set_scale(next[0], next[1], next[2]);
+                                    }
+                                }
+                                GizmoMode::Select | GizmoMode::Rotate => {}
                             }
                         }
                     }
@@ -1850,6 +2195,8 @@ impl DreamUsdApp {
             self.dragging_handle = None;
             self.drag_start_pos = None;
             self.drag_start_values = None;
+            self.drag_start_local_rotation = None;
+            self.drag_start_world_rotation = None;
             self.drag_start_pointer = None;
             self.drag_screen_dir = None;
             self.drag_screen_axis_len = None;
@@ -1927,6 +2274,27 @@ impl eframe::App for DreamUsdApp {
                             self.dragging_handle = None;
                         }
                     }
+                    ui.separator();
+                    if ui
+                        .selectable_label(
+                            self.effective_gizmo_space() == GizmoSpace::Local,
+                            "Local",
+                        )
+                        .clicked()
+                    {
+                        self.set_gizmo_space(GizmoSpace::Local);
+                    }
+                    ui.add_enabled_ui(self.gizmo_mode != GizmoMode::Scale, |ui| {
+                        if ui
+                            .selectable_label(
+                                self.effective_gizmo_space() == GizmoSpace::World,
+                                "World",
+                            )
+                            .clicked()
+                        {
+                            self.set_gizmo_space(GizmoSpace::World);
+                        }
+                    });
                 });
             });
         });
