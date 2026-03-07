@@ -113,6 +113,15 @@ impl Prim {
         Ok(xyz)
     }
 
+    /// Get the USD XformCommonAPI rotation order for this prim.
+    pub fn get_rotation_order(&self) -> Result<i32, DuError> {
+        let mut order = 0i32;
+        unsafe {
+            check(du_xform_get_rotate_order(self.raw, &mut order as *mut i32))?;
+        }
+        Ok(order)
+    }
+
     /// Get the scale vector for this prim.
     pub fn get_scale(&self) -> Result<[f64; 3], DuError> {
         let mut xyz = [1.0f64; 3];

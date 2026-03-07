@@ -1174,20 +1174,14 @@ impl DreamUsdApp {
         let Ok(matrix) = prim.get_world_matrix() else {
             return fallback;
         };
-
-        let mut axes = [
-            Vec3::new(matrix[0] as f32, matrix[1] as f32, matrix[2] as f32),
-            Vec3::new(matrix[4] as f32, matrix[5] as f32, matrix[6] as f32),
-            Vec3::new(matrix[8] as f32, matrix[9] as f32, matrix[10] as f32),
-        ];
-        for (axis, fallback_axis) in axes.iter_mut().zip(fallback) {
-            if axis.length_squared() > 1.0e-6 {
-                *axis = axis.normalize();
-            } else {
-                *axis = fallback_axis;
-            }
-        }
-        axes
+        let Some(world_rotation) = Self::quat_from_matrix(matrix) else {
+            return fallback;
+        };
+        [
+            world_rotation * Vec3::X,
+            world_rotation * Vec3::Y,
+            world_rotation * Vec3::Z,
+        ]
     }
 
     fn effective_gizmo_space(&self) -> GizmoSpace {
@@ -1218,20 +1212,54 @@ impl DreamUsdApp {
     }
 
     fn quat_from_matrix(matrix: [f64; 16]) -> Option<Quat> {
-        let mut axes = [
-            Vec3::new(matrix[0] as f32, matrix[1] as f32, matrix[2] as f32),
-            Vec3::new(matrix[4] as f32, matrix[5] as f32, matrix[6] as f32),
-            Vec3::new(matrix[8] as f32, matrix[9] as f32, matrix[10] as f32),
-        ];
-        for axis in &mut axes {
-            if axis.length_squared() <= 1.0e-6 {
-                return None;
-            }
-            *axis = axis.normalize();
+        let original_x = Vec3::new(matrix[0] as f32, matrix[1] as f32, matrix[2] as f32);
+        let original_y = Vec3::new(matrix[4] as f32, matrix[5] as f32, matrix[6] as f32);
+        let original_z = Vec3::new(matrix[8] as f32, matrix[9] as f32, matrix[10] as f32);
+        if original_x.length_squared() <= 1.0e-6
+            || original_y.length_squared() <= 1.0e-6
+            || original_z.length_squared() <= 1.0e-6
+        {
+            return None;
         }
-        Some(Quat::from_mat3(&dreamusd_render::glam::Mat3::from_cols(
-            axes[0], axes[1], axes[2],
-        )))
+
+        let x = original_x.normalize();
+        let mut y = original_y - x * x.dot(original_y);
+        if y.length_squared() <= 1.0e-6 {
+            y = original_z.cross(x);
+        }
+        if y.length_squared() <= 1.0e-6 {
+            return None;
+        }
+        y = y.normalize();
+
+        let mut z = x.cross(y);
+        if z.length_squared() <= 1.0e-6 {
+            return None;
+        }
+        z = z.normalize();
+        if z.dot(original_z) < 0.0 {
+            z = -z;
+            y = -y;
+        }
+
+        Some(Quat::from_mat3(&dreamusd_render::glam::Mat3::from_cols(x, y, z)))
+    }
+
+    fn rotation_order_to_euler(order: i32) -> EulerRot {
+        match order {
+            1 => EulerRot::XZY,
+            2 => EulerRot::YXZ,
+            3 => EulerRot::YZX,
+            4 => EulerRot::ZXY,
+            5 => EulerRot::ZYX,
+            _ => EulerRot::XYZ,
+        }
+    }
+
+    fn euler_order_for_prim(prim: &Prim) -> EulerRot {
+        prim.get_rotation_order()
+            .map(Self::rotation_order_to_euler)
+            .unwrap_or(EulerRot::XYZ)
     }
 
     fn plane_handle_quad(
@@ -1339,7 +1367,7 @@ impl DreamUsdApp {
             }
         };
 
-        let (x, y, z) = new_local.to_euler(EulerRot::XYZ);
+        let (x, y, z) = new_local.to_euler(Self::euler_order_for_prim(prim));
         let _ = prim.set_rotate(x.to_degrees() as f64, y.to_degrees() as f64, z.to_degrees() as f64);
     }
 

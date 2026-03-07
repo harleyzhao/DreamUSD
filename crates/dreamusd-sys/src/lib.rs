@@ -127,6 +127,7 @@ extern "C" {
     pub fn du_xform_get_world(prim: *mut DuPrim, matrix: *mut f64) -> DuStatus;
     pub fn du_xform_get_translate(prim: *mut DuPrim, xyz: *mut f64) -> DuStatus;
     pub fn du_xform_get_rotate(prim: *mut DuPrim, xyz: *mut f64) -> DuStatus;
+    pub fn du_xform_get_rotate_order(prim: *mut DuPrim, order: *mut i32) -> DuStatus;
     pub fn du_xform_get_scale(prim: *mut DuPrim, xyz: *mut f64) -> DuStatus;
     pub fn du_xform_get_pivot(prim: *mut DuPrim, xyz: *mut f64) -> DuStatus;
     pub fn du_xform_get_world_pivot(prim: *mut DuPrim, xyz: *mut f64) -> DuStatus;

@@ -99,6 +99,7 @@ DuStatus du_xform_get_local(DuPrim* prim, double matrix[16]);
 DuStatus du_xform_get_world(DuPrim* prim, double matrix[16]);
 DuStatus du_xform_get_translate(DuPrim* prim, double xyz[3]);
 DuStatus du_xform_get_rotate(DuPrim* prim, double xyz[3]);
+DuStatus du_xform_get_rotate_order(DuPrim* prim, int32_t* order);
 DuStatus du_xform_get_scale(DuPrim* prim, double xyz[3]);
 DuStatus du_xform_get_pivot(DuPrim* prim, double xyz[3]);
 DuStatus du_xform_get_world_pivot(DuPrim* prim, double xyz[3]);

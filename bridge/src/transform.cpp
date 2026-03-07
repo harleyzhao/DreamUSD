@@ -117,6 +117,37 @@ DuStatus du_xform_get_rotate(DuPrim* prim, double xyz[3]) {
     return du_xform_get_trs(prim, xyz, 1);
 }
 
+DuStatus du_xform_get_rotate_order(DuPrim* prim, int32_t* order) {
+    DU_CHECK_NULL(prim);
+    DU_CHECK_NULL(order);
+
+    UsdGeomXformCommonAPI api(du_prim_get_usd(prim));
+    if (!api) {
+        du_set_last_error("Cannot create XformCommonAPI for prim");
+        return DU_ERR_INVALID;
+    }
+
+    GfVec3d translation(0.0);
+    GfVec3f rotation(0.0f);
+    GfVec3f scale(1.0f);
+    GfVec3f pivot(0.0f);
+    UsdGeomXformCommonAPI::RotationOrder rotationOrder;
+
+    if (!api.GetXformVectors(
+            &translation,
+            &rotation,
+            &scale,
+            &pivot,
+            &rotationOrder,
+            UsdTimeCode::Default())) {
+        du_set_last_error("Failed to read transform rotation order");
+        return DU_ERR_USD;
+    }
+
+    *order = static_cast<int32_t>(rotationOrder);
+    return DU_OK;
+}
+
 DuStatus du_xform_get_scale(DuPrim* prim, double xyz[3]) {
     return du_xform_get_trs(prim, xyz, 2);
 }
@@ -263,6 +294,11 @@ DuStatus du_xform_get_world(DuPrim*, double[16]) {
 }
 
 DuStatus du_xform_get_rotate(DuPrim*, double[3]) {
+    du_set_last_error("USD not available (stub build)");
+    return DU_ERR_INVALID;
+}
+
+DuStatus du_xform_get_rotate_order(DuPrim*, int32_t*) {
     du_set_last_error("USD not available (stub build)");
     return DU_ERR_INVALID;
 }
