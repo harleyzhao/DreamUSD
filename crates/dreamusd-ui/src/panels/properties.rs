@@ -44,6 +44,12 @@ impl PropertiesPanel {
                     .show(ui, |ui| {
                     Self::show_default_light_editor(ui, stage, prim);
                 });
+            } else if Self::is_light_type(&type_name) {
+                egui::CollapsingHeader::new("Light")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                    Self::show_light_editor(ui, stage, prim);
+                });
             }
 
             // Transform section
@@ -441,6 +447,217 @@ impl PropertiesPanel {
                 }
             }
         });
+    }
+
+    fn is_light_type(type_name: &str) -> bool {
+        matches!(
+            type_name,
+            "DistantLight"
+                | "DomeLight"
+                | "DomeLight_1"
+                | "SphereLight"
+                | "RectLight"
+                | "DiskLight"
+                | "CylinderLight"
+                | "PortalLight"
+        )
+    }
+
+    fn show_light_editor(ui: &mut egui::Ui, stage: Option<&Stage>, prim: &Prim) {
+        let mut row_counter = 0usize;
+        Self::show_light_float_editor(
+            ui,
+            stage,
+            prim,
+            "Intensity",
+            &["inputs:intensity", "intensity"],
+            0.0..=100_000.0,
+            &mut row_counter,
+        );
+        Self::show_light_float_editor(
+            ui,
+            stage,
+            prim,
+            "Exposure",
+            &["inputs:exposure", "exposure"],
+            -20.0..=20.0,
+            &mut row_counter,
+        );
+        Self::show_light_color_editor(
+            ui,
+            stage,
+            prim,
+            "Color",
+            &["inputs:color", "color"],
+            &mut row_counter,
+        );
+        Self::show_light_bool_editor(
+            ui,
+            stage,
+            prim,
+            "Shadow",
+            &["inputs:shadow:enable", "shadow:enable", "hasShadow"],
+            &mut row_counter,
+        );
+        Self::show_light_float_editor(
+            ui,
+            stage,
+            prim,
+            "Radius",
+            &["inputs:radius", "radius"],
+            0.0..=10_000.0,
+            &mut row_counter,
+        );
+        Self::show_light_float_editor(
+            ui,
+            stage,
+            prim,
+            "Angle",
+            &["inputs:angle", "angle"],
+            0.0..=180.0,
+            &mut row_counter,
+        );
+    }
+
+    fn show_light_float_editor(
+        ui: &mut egui::Ui,
+        stage: Option<&Stage>,
+        prim: &Prim,
+        label: &str,
+        attrs: &[&str],
+        range: std::ops::RangeInclusive<f64>,
+        row_counter: &mut usize,
+    ) {
+        let Some((attr_name, value)) = Self::read_first_f64_attr(prim, attrs) else {
+            return;
+        };
+        Self::paint_row_bg(ui, *row_counter);
+        *row_counter += 1;
+        let mut edited = value;
+        ui.horizontal(|ui| {
+            ui.label(label);
+            let response = ui.add(egui::DragValue::new(&mut edited).speed(0.05).range(range));
+            if response.changed() {
+                Self::set_attr_with_undo(stage, prim, &attr_name, &edited.to_string());
+            }
+        });
+    }
+
+    fn show_light_bool_editor(
+        ui: &mut egui::Ui,
+        stage: Option<&Stage>,
+        prim: &Prim,
+        label: &str,
+        attrs: &[&str],
+        row_counter: &mut usize,
+    ) {
+        let Some((attr_name, value)) = Self::read_first_bool_attr(prim, attrs) else {
+            return;
+        };
+        Self::paint_row_bg(ui, *row_counter);
+        *row_counter += 1;
+        let mut edited = value;
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut edited, label).changed() {
+                Self::set_attr_with_undo(
+                    stage,
+                    prim,
+                    &attr_name,
+                    if edited { "true" } else { "false" },
+                );
+            }
+        });
+    }
+
+    fn show_light_color_editor(
+        ui: &mut egui::Ui,
+        stage: Option<&Stage>,
+        prim: &Prim,
+        label: &str,
+        attrs: &[&str],
+        row_counter: &mut usize,
+    ) {
+        let Some((attr_name, values)) = Self::read_first_vec3_attr(prim, attrs) else {
+            return;
+        };
+        let mut edited = values;
+        for (index, axis) in ["R", "G", "B"].iter().enumerate() {
+            Self::paint_row_bg(ui, *row_counter);
+            *row_counter += 1;
+            ui.horizontal(|ui| {
+                ui.label(format!("{label} {axis}"));
+                let response = ui.add(
+                    egui::DragValue::new(&mut edited[index])
+                        .speed(0.01)
+                        .range(0.0..=1000.0),
+                );
+                if response.changed() {
+                    let value = format!("({}, {}, {})", edited[0], edited[1], edited[2]);
+                    Self::set_attr_with_undo(stage, prim, &attr_name, &value);
+                }
+            });
+        }
+    }
+
+    fn set_attr_with_undo(stage: Option<&Stage>, prim: &Prim, attr_name: &str, value: &str) {
+        if let Some(stage) = stage {
+            let _ = stage.undo_begin();
+            let _ = prim.set_attribute(attr_name, value);
+            let _ = stage.undo_end();
+        } else {
+            let _ = prim.set_attribute(attr_name, value);
+        }
+    }
+
+    fn read_first_attr(prim: &Prim, attrs: &[&str]) -> Option<(String, String)> {
+        attrs.iter().find_map(|name| {
+            prim.get_attribute(name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| ((*name).to_string(), value))
+        })
+    }
+
+    fn read_first_f64_attr(prim: &Prim, attrs: &[&str]) -> Option<(String, f64)> {
+        let (name, raw) = Self::read_first_attr(prim, attrs)?;
+        raw.trim().parse::<f64>().ok().map(|value| (name, value))
+    }
+
+    fn read_first_bool_attr(prim: &Prim, attrs: &[&str]) -> Option<(String, bool)> {
+        let (name, raw) = Self::read_first_attr(prim, attrs)?;
+        let lowered = raw.trim().to_ascii_lowercase();
+        let value = match lowered.as_str() {
+            "1" | "true" | "yes" => true,
+            "0" | "false" | "no" => false,
+            _ => return None,
+        };
+        Some((name, value))
+    }
+
+    fn read_first_vec3_attr(prim: &Prim, attrs: &[&str]) -> Option<(String, [f64; 3])> {
+        let (name, raw) = Self::read_first_attr(prim, attrs)?;
+        let mut numbers = Vec::new();
+        let mut current = String::new();
+        for ch in raw.chars() {
+            if ch.is_ascii_digit() || matches!(ch, '-' | '+' | '.' | 'e' | 'E') {
+                current.push(ch);
+            } else if !current.is_empty() {
+                if let Ok(value) = current.parse::<f64>() {
+                    numbers.push(value);
+                }
+                current.clear();
+            }
+        }
+        if !current.is_empty() {
+            if let Ok(value) = current.parse::<f64>() {
+                numbers.push(value);
+            }
+        }
+        if numbers.len() >= 3 {
+            Some((name, [numbers[0], numbers[1], numbers[2]]))
+        } else {
+            None
+        }
     }
 
     fn show_material_param_row(

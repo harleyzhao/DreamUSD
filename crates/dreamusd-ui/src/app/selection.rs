@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use super::DreamUsdApp;
+use super::{DreamUsdApp, PickFilter};
 use dreamusd_core::{Prim, Stage};
 use dreamusd_render::glam::Vec3;
 
@@ -42,9 +42,15 @@ impl DreamUsdApp {
                 viewport_h,
             ) {
                 if !path.is_empty() && path != "/" {
-                    return self
-                        .resolve_transform_target_path(&path)
-                        .or(Some(path));
+                    if let Some(prim) = self
+                        .stage
+                        .as_ref()
+                        .and_then(|stage| find_prim_recursive(stage, &path))
+                    {
+                        if self.matches_pick_filter(&prim) {
+                            return self.resolve_transform_target_path(&path).or(Some(path));
+                        }
+                    }
                 }
             }
         }
@@ -72,6 +78,15 @@ impl DreamUsdApp {
         pointer_pos: egui::Pos2,
         best: &mut Option<(String, f32)>,
     ) {
+        if !self.matches_pick_filter(prim) {
+            if let Ok(children) = prim.children() {
+                for child in children {
+                    self.pick_in_subtree(&child, rect, pointer_pos, best);
+                }
+            }
+            return;
+        }
+
         if let (Ok(path), Some(world_pos)) = (prim.path(), self.get_prim_position(prim)) {
             if path != "/" {
                 if let Some(screen_pos) = self.hydra_project(world_pos, rect) {
@@ -93,6 +108,29 @@ impl DreamUsdApp {
                 self.pick_in_subtree(&child, rect, pointer_pos, best);
             }
         }
+    }
+
+    fn matches_pick_filter(&self, prim: &Prim) -> bool {
+        matches_pick_filter(prim, self.pick_filter)
+    }
+}
+
+fn matches_pick_filter(prim: &Prim, filter: PickFilter) -> bool {
+    if filter == PickFilter::All {
+        return true;
+    }
+
+    let type_name = prim.type_name().unwrap_or_default();
+    let name = prim.name().unwrap_or_default();
+
+    match filter {
+        PickFilter::All => true,
+        PickFilter::Geometry => matches!(type_name.as_str(), "Mesh" | "Points" | "BasisCurves" | "Curves" | "GeomSubset"),
+        PickFilter::Lights => matches!(
+            type_name.as_str(),
+            "DistantLight" | "DomeLight" | "SphereLight" | "RectLight" | "DiskLight" | "CylinderLight"
+        ) || name.contains("Light") || name.contains("light"),
+        PickFilter::Cameras => type_name == "Camera",
     }
 }
 

@@ -92,6 +92,26 @@ impl GizmoSpace {
     }
 }
 
+impl PickFilter {
+    fn label(self) -> &'static str {
+        match self {
+            PickFilter::All => "All",
+            PickFilter::Geometry => "Geometry",
+            PickFilter::Lights => "Lights",
+            PickFilter::Cameras => "Cameras",
+        }
+    }
+
+    fn all() -> &'static [PickFilter] {
+        &[
+            PickFilter::All,
+            PickFilter::Geometry,
+            PickFilter::Lights,
+            PickFilter::Cameras,
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GizmoMode {
     Select,
@@ -107,10 +127,19 @@ pub enum GizmoSpace {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickFilter {
+    All,
+    Geometry,
+    Lights,
+    Cameras,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GizmoHandle {
     Axis(usize),
     Plane(usize, usize),
     Center,
+    View,
 }
 
 enum ViewportTexture {
@@ -164,6 +193,7 @@ pub struct DreamUsdApp {
     status_message: String,
     gizmo_mode: GizmoMode,
     gizmo_space: GizmoSpace,
+    pick_filter: PickFilter,
     viewport_texture: Option<ViewportTexture>,
     viewport_texture_size: Option<(u32, u32)>,
     render_state: Option<eframe::egui_wgpu::RenderState>,
@@ -224,6 +254,7 @@ impl Default for DreamUsdApp {
             status_message: "Ready".to_string(),
             gizmo_mode: GizmoMode::Select,
             gizmo_space: GizmoSpace::Local,
+            pick_filter: PickFilter::All,
             viewport_texture: None,
             viewport_texture_size: None,
             render_state: None,
@@ -883,6 +914,7 @@ impl DreamUsdApp {
         let key_e = ctx.input(|i| allow_viewport_shortcuts && i.key_pressed(egui::Key::E) && !i.modifiers.command);
         let key_r = ctx.input(|i| allow_viewport_shortcuts && i.key_pressed(egui::Key::R) && !i.modifiers.command);
         let key_x = ctx.input(|i| allow_viewport_shortcuts && i.key_pressed(egui::Key::X) && !i.modifiers.command);
+        let key_a = ctx.input(|i| allow_viewport_shortcuts && i.key_pressed(egui::Key::A) && !i.modifiers.command);
         let key_f = ctx.input(|i| allow_viewport_shortcuts && i.key_pressed(egui::Key::F) && !i.modifiers.command);
         let delete_selected = ctx.input(|i| {
             allow_viewport_shortcuts
@@ -914,6 +946,8 @@ impl DreamUsdApp {
             if self.gizmo_mode != GizmoMode::Scale {
                 self.toggle_gizmo_space();
             }
+        } else if key_a {
+            self.focus_stage_contents();
         } else if key_f {
             self.focus_selected_prim();
         } else if delete_selected {
@@ -1371,6 +1405,56 @@ impl DreamUsdApp {
         let _ = prim.set_rotate(x.to_degrees() as f64, y.to_degrees() as f64, z.to_degrees() as f64);
     }
 
+    fn apply_view_rotation(&self, prim: &Prim, angle_deg: f32) {
+        let Some(local_start) = self
+            .drag_start_local_rotation
+            .or_else(|| prim.get_local_matrix().ok().and_then(Self::quat_from_matrix))
+        else {
+            return;
+        };
+        let Some(world_start) = self
+            .drag_start_world_rotation
+            .or_else(|| prim.get_world_matrix().ok().and_then(Self::quat_from_matrix))
+        else {
+            return;
+        };
+
+        let camera_forward = (self.camera.target - self.camera.eye).normalize_or_zero();
+        if camera_forward.length_squared() <= 1.0e-6 {
+            return;
+        }
+
+        let world_delta = Quat::from_axis_angle(camera_forward, angle_deg.to_radians());
+        let parent_world = (world_start * local_start.inverse()).normalize();
+        let new_local = (parent_world.inverse() * (world_delta * world_start)).normalize();
+        let (x, y, z) = new_local.to_euler(Self::euler_order_for_prim(prim));
+        let _ = prim.set_rotate(
+            x.to_degrees() as f64,
+            y.to_degrees() as f64,
+            z.to_degrees() as f64,
+        );
+    }
+
+    fn view_rotate_ring_radius(
+        &self,
+        rect: egui::Rect,
+        world_pos: Vec3,
+        axis_dirs: [Vec3; 3],
+        axis_len: f32,
+    ) -> Option<f32> {
+        let center = self.hydra_project(world_pos, rect)?;
+        let max_radius = axis_dirs
+            .iter()
+            .filter_map(|axis| self.hydra_project(world_pos + *axis * axis_len, rect))
+            .map(|point| point.distance(center))
+            .fold(0.0_f32, f32::max);
+        if max_radius > 1.0 {
+            Some(max_radius + 18.0)
+        } else {
+            None
+        }
+    }
+
     /// Project a world-space point to screen coordinates using the Hydra engine's
     /// exact view/projection matrices for perfect alignment with the rendered scene.
     fn hydra_project(
@@ -1447,6 +1531,18 @@ impl DreamUsdApp {
                 };
                 if hovered {
                     return Some(GizmoHandle::Axis(i));
+                }
+            }
+        }
+        if self.gizmo_mode == GizmoMode::Rotate {
+            if let Some(center_2d) = self.hydra_project(world_pos, rect) {
+                if let Some(radius) =
+                    self.view_rotate_ring_radius(rect, world_pos, axis_dirs, axis_len)
+                {
+                    let distance = center_2d.distance(mouse_pos);
+                    if (distance - radius).abs() < 8.0 {
+                        return Some(GizmoHandle::View);
+                    }
                 }
             }
         }
@@ -1717,6 +1813,37 @@ impl DreamUsdApp {
             egui::Color32::from_rgb(60, 200, 60),
             egui::Color32::from_rgb(60, 100, 230),
         ];
+        if let Some(center_2d) = self.hydra_project(world_pos, rect) {
+            if let Some(view_radius) =
+                self.view_rotate_ring_radius(rect, world_pos, axis_dirs, axis_len)
+            {
+                let is_active = self.dragging_handle == Some(GizmoHandle::View)
+                    || hovered_handle == Some(GizmoHandle::View);
+                painter.circle_stroke(
+                    center_2d,
+                    view_radius,
+                    egui::Stroke::new(
+                        if is_active { 3.0 } else { 1.75 },
+                        if is_active {
+                            egui::Color32::YELLOW
+                        } else {
+                            egui::Color32::from_gray(210)
+                        },
+                    ),
+                );
+                painter.text(
+                    center_2d + egui::vec2(0.0, -view_radius - 12.0),
+                    egui::Align2::CENTER_CENTER,
+                    "View",
+                    egui::FontId::proportional(11.0),
+                    if is_active {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::from_gray(220)
+                    },
+                );
+            }
+        }
 
         for (i, color) in colors.iter().enumerate() {
             if let Some(points) = self.projected_rotation_ring(rect, world_pos, axis_dirs, i, axis_len) {
@@ -1909,6 +2036,7 @@ impl DreamUsdApp {
             GizmoHandle::Plane(0, 2) => "XZ",
             GizmoHandle::Plane(_, _) => "Plane",
             GizmoHandle::Center => "Center",
+            GizmoHandle::View => "View",
             GizmoHandle::Axis(_) => "Axis",
         };
         let mode_text = match self.gizmo_mode {
@@ -1993,6 +2121,13 @@ impl DreamUsdApp {
                                 + Self::normalize_screen_vec(axis_b_screen),
                         );
                         (axis_len, diagonal.length().max(1.0), diagonal)
+                    }
+                    GizmoHandle::View => {
+                        let axis_len = self.gizmo_axis_length(prim_pos);
+                        let radius = self
+                            .view_rotate_ring_radius(rect, prim_pos, axis_dirs, axis_len)
+                            .unwrap_or(1.0);
+                        (axis_len, radius.max(1.0), egui::vec2(1.0, 0.0))
                     }
                     GizmoHandle::Center => (1.0, 1.0, egui::vec2(1.0, 0.0)),
                 };
@@ -2208,6 +2343,36 @@ impl DreamUsdApp {
                             );
                         }
                         GizmoMode::Rotate => {}
+                    },
+                    GizmoHandle::View => {
+                        if self.gizmo_mode == GizmoMode::Rotate {
+                            let reference_pos = self.drag_start_pos.unwrap_or(prim_pos);
+                            if let (Some(start_pointer), Some(current_pointer), Some(center)) = (
+                                self.drag_start_pointer,
+                                response.interact_pointer_pos(),
+                                self.hydra_project(reference_pos, rect),
+                            ) {
+                                let start_vec = start_pointer - center;
+                                let current_vec = current_pointer - center;
+                                let start_len = start_vec.length();
+                                let current_len = current_vec.length();
+                                if start_len > 4.0 && current_len > 4.0 {
+                                    let start_dir = start_vec / start_len;
+                                    let current_dir = current_vec / current_len;
+                                    let cross =
+                                        start_dir.x * current_dir.y - start_dir.y * current_dir.x;
+                                    let dot = start_dir.dot(current_dir).clamp(-1.0, 1.0);
+                                    let mut drag_amount_deg =
+                                        cross.atan2(dot).to_degrees() as f32;
+                                    if snap {
+                                        drag_amount_deg =
+                                            Self::snap_rotation_degrees(drag_amount_deg as f64)
+                                                as f32;
+                                    }
+                                    self.apply_view_rotation(prim, drag_amount_deg);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2289,6 +2454,9 @@ impl eframe::App for DreamUsdApp {
                     ui.separator();
                     if ui.small_button("Frame").clicked() {
                         self.focus_selected_prim();
+                    }
+                    if ui.small_button("All").clicked() {
+                        self.focus_stage_contents();
                     }
                     ui.separator();
                     for (mode, label) in [
@@ -2411,6 +2579,25 @@ impl eframe::App for DreamUsdApp {
                     ui.separator();
 
                     self.draw_renderer_aov_combo(ui, "viewport_toolbar_aov");
+
+                    ui.separator();
+
+                    egui::ComboBox::from_id_salt("viewport_toolbar_pick_filter")
+                        .selected_text(format!("Pick: {}", self.pick_filter.label()))
+                        .width(110.0)
+                        .show_ui(ui, |ui| {
+                            for &filter in PickFilter::all() {
+                                if ui
+                                    .selectable_label(self.pick_filter == filter, filter.label())
+                                    .clicked()
+                                {
+                                    self.pick_filter = filter;
+                                    self.status_message =
+                                        format!("Pick filter: {}", filter.label());
+                                    ui.close_menu();
+                                }
+                            }
+                        });
 
                     ui.separator();
 

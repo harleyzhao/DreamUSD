@@ -116,6 +116,45 @@ impl DreamUsdApp {
         self.status_message = format!("Focused: {selected_path}");
     }
 
+    pub(super) fn focus_stage_contents(&mut self) {
+        let Some(stage) = self.stage.as_ref() else {
+            return;
+        };
+        let Ok(root) = stage.root_prim() else {
+            self.status_message = "Frame all failed: root prim unavailable".to_string();
+            return;
+        };
+
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        let mut count = 0usize;
+
+        fn accumulate_bounds(app: &DreamUsdApp, prim: &dreamusd_core::Prim, min: &mut Vec3, max: &mut Vec3, count: &mut usize) {
+            if let Some(position) = app.get_prim_position(prim) {
+                *min = min.min(position);
+                *max = max.max(position);
+                *count += 1;
+            }
+            if let Ok(children) = prim.children() {
+                for child in children {
+                    accumulate_bounds(app, &child, min, max, count);
+                }
+            }
+        }
+
+        accumulate_bounds(self, &root, &mut min, &mut max, &mut count);
+        if count == 0 {
+            self.status_message = "Frame all failed: scene has no frameable prims".to_string();
+            return;
+        }
+
+        let center = (min + max) * 0.5;
+        let radius = ((max - min) * 0.5).length().max(1.0);
+        self.camera.focus_on(center, radius * 1.2);
+        self.invalidate_auto_clip();
+        self.status_message = "Framed scene".to_string();
+    }
+
     pub(super) fn reset_camera_to_stage_up_axis(&mut self) {
         let z_up = self
             .stage
