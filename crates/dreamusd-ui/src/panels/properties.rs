@@ -1,3 +1,4 @@
+use crate::theme;
 use dreamusd_core::{MaterialParam, Prim, Stage};
 
 /// Panel that displays the properties of a selected prim.
@@ -16,7 +17,10 @@ impl PropertiesPanel {
         let prim = match prim {
             Some(p) => p,
             None => {
-                ui.label("No prim selected");
+                ui.vertical_centered(|ui| {
+                    ui.add_space(40.0);
+                    ui.label(theme::subdued("No prim selected"));
+                });
                 return;
             }
         };
@@ -25,11 +29,13 @@ impl PropertiesPanel {
         let path = prim.path().unwrap_or_else(|_| "???".to_string());
         let type_name = prim.type_name().unwrap_or_else(|_| String::new());
 
-        ui.heading(&path);
-        if !type_name.is_empty() {
-            ui.label(format!("Type: {type_name}"));
-        }
-        ui.separator();
+        theme::panel_card_frame().show(ui, |ui: &mut egui::Ui| {
+            ui.label(egui::RichText::new(&path).strong().small());
+            if !type_name.is_empty() {
+                ui.label(theme::subdued(&format!("Type: {type_name}")));
+            }
+        });
+        ui.add_space(4.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             if path.starts_with("/_DefaultLights/") {
@@ -56,8 +62,10 @@ impl PropertiesPanel {
                             let transform_path = transform_prim
                                 .path()
                                 .unwrap_or_else(|_| "???".to_string());
-                            ui.label(format!("Editing target: {transform_path}"));
+                            ui.label(theme::subdued(&format!("Editing target: {transform_path}")));
+                            ui.add_space(2.0);
                         }
+                        let mut row_counter: usize = 0;
                         Self::show_vector_editor(
                             ui,
                             stage,
@@ -65,6 +73,7 @@ impl PropertiesPanel {
                             "Translate",
                             translate,
                             Prim::set_translate,
+                            &mut row_counter,
                         );
                         Self::show_vector_editor(
                             ui,
@@ -73,6 +82,7 @@ impl PropertiesPanel {
                             "Rotate",
                             rotate,
                             Prim::set_rotate,
+                            &mut row_counter,
                         );
                         Self::show_vector_editor(
                             ui,
@@ -81,6 +91,7 @@ impl PropertiesPanel {
                             "Scale",
                             scale,
                             Prim::set_scale,
+                            &mut row_counter,
                         );
 
                         ui.collapsing("Full Matrix", |ui| {
@@ -118,39 +129,36 @@ impl PropertiesPanel {
                     if names.is_empty() {
                         ui.label("(none)");
                     } else {
-                        egui::Grid::new("attr_grid")
-                            .striped(true)
-                            .num_columns(2)
-                            .show(ui, |ui| {
-                                for name in &names {
-                                    ui.label(name);
-                                    let val = prim
-                                        .get_attribute(name)
-                                        .unwrap_or_else(|_| "(error)".to_string());
-                                    let id = ui.make_persistent_id(format!("attr_{name}"));
-                                    let mut edit_val =
-                                        ui.data(|d| d.get_temp::<String>(id).unwrap_or(val.clone()));
-                                    let response = ui.text_edit_singleline(&mut edit_val);
-                                    if response.changed() {
-                                        ui.data_mut(|d| d.insert_temp(id, edit_val.clone()));
-                                    }
-                                    if response.lost_focus()
-                                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                    {
-                                        if edit_val != val {
-                                            if let Some(stage) = stage {
-                                                let _ = stage.undo_begin();
-                                                let _ = prim.set_attribute(name, &edit_val);
-                                                let _ = stage.undo_end();
-                                            } else {
-                                                let _ = prim.set_attribute(name, &edit_val);
-                                            }
+                        for (row_idx, name) in names.iter().enumerate() {
+                            Self::paint_row_bg(ui, row_idx);
+                            ui.horizontal(|ui| {
+                                ui.label(theme::subdued(name));
+                                let val = prim
+                                    .get_attribute(name)
+                                    .unwrap_or_else(|_| "(error)".to_string());
+                                let id = ui.make_persistent_id(format!("attr_{name}"));
+                                let mut edit_val =
+                                    ui.data(|d| d.get_temp::<String>(id).unwrap_or(val.clone()));
+                                let response = ui.text_edit_singleline(&mut edit_val);
+                                if response.changed() {
+                                    ui.data_mut(|d| d.insert_temp(id, edit_val.clone()));
+                                }
+                                if response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    if edit_val != val {
+                                        if let Some(stage) = stage {
+                                            let _ = stage.undo_begin();
+                                            let _ = prim.set_attribute(name, &edit_val);
+                                            let _ = stage.undo_end();
+                                        } else {
+                                            let _ = prim.set_attribute(name, &edit_val);
                                         }
-                                        ui.data_mut(|d| d.remove_temp::<String>(id));
                                     }
-                                    ui.end_row();
+                                    ui.data_mut(|d| d.remove_temp::<String>(id));
                                 }
                             });
+                        }
                     }
                 }
                 Err(e) => {
@@ -166,15 +174,13 @@ impl PropertiesPanel {
                     if sets.is_empty() {
                         ui.label("(none)");
                     } else {
-                        egui::Grid::new("variant_grid")
-                            .striped(true)
-                            .show(ui, |ui| {
-                                for set_name in &sets {
-                                    ui.label(set_name);
-                                    Self::show_variant_editor(ui, stage, prim, set_name);
-                                    ui.end_row();
-                                }
+                        for (row_idx, set_name) in sets.iter().enumerate() {
+                            Self::paint_row_bg(ui, row_idx);
+                            ui.horizontal(|ui| {
+                                ui.label(theme::subdued(set_name));
+                                Self::show_variant_editor(ui, stage, prim, set_name);
                             });
+                        }
                     }
                 }
                 Err(e) => {
@@ -216,6 +222,21 @@ impl PropertiesPanel {
         });
     }
 
+    /// Paint a full-width alternating row background.
+    fn paint_row_bg(ui: &mut egui::Ui, row_index: usize) {
+        let row_bg = if row_index % 2 == 0 {
+            egui::Color32::from_rgb(24, 24, 30)
+        } else {
+            egui::Color32::from_rgb(36, 36, 44)
+        };
+        let row_height = ui.spacing().interact_size.y;
+        let full_rect = egui::Rect::from_min_size(
+            egui::pos2(ui.clip_rect().left(), ui.cursor().top()),
+            egui::vec2(ui.clip_rect().width(), row_height),
+        );
+        ui.painter().rect_filled(full_rect, 0.0, row_bg);
+    }
+
     fn show_vector_editor(
         ui: &mut egui::Ui,
         stage: Option<&Stage>,
@@ -223,12 +244,15 @@ impl PropertiesPanel {
         prefix: &str,
         values: [f64; 3],
         setter: fn(&Prim, f64, f64, f64) -> Result<(), dreamusd_core::DuError>,
+        row_counter: &mut usize,
     ) {
         let labels = ["X", "Y", "Z"];
         let mut edited_values = values;
         let mut changed = false;
 
         for (index, axis) in labels.iter().enumerate() {
+            Self::paint_row_bg(ui, *row_counter);
+            *row_counter += 1;
             ui.horizontal(|ui| {
                 ui.label(format!("{prefix} {axis}"));
                 let id = ui.make_persistent_id(format!("{prefix}_{index}"));
@@ -375,21 +399,16 @@ impl PropertiesPanel {
                 ui.label("(no editable shader inputs)");
             }
             Ok(params) => {
-                egui::Grid::new("material_params_grid")
-                    .striped(true)
-                    .num_columns(2)
-                    .show(ui, |ui| {
-                        for param in &params {
-                            Self::show_material_param_row(
-                                ui,
-                                stage,
-                                &material_prim,
-                                param,
-                                status_message,
-                            );
-                            ui.end_row();
-                        }
-                    });
+                for (row_idx, param) in params.iter().enumerate() {
+                    Self::paint_row_bg(ui, row_idx);
+                    Self::show_material_param_row(
+                        ui,
+                        stage,
+                        &material_prim,
+                        param,
+                        status_message,
+                    );
+                }
             }
             Err(e) => {
                 ui.label(format!("Material params unavailable: {e}"));
@@ -436,31 +455,34 @@ impl PropertiesPanel {
         } else {
             format!("{} ({})", param.name, param.type_name)
         };
-        ui.label(label);
 
-        let id = ui.make_persistent_id(format!("material_param_{}", param.name));
-        let mut edit_value = ui
-            .data(|d| d.get_temp::<String>(id))
-            .unwrap_or_else(|| param.value.clone());
-        let response = ui.text_edit_singleline(&mut edit_value);
-        if response.changed() {
-            ui.data_mut(|d| d.insert_temp(id, edit_value.clone()));
-        }
-        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            if edit_value != param.value {
-                let _ = stage.undo_begin();
-                match material_prim.set_material_param(&param.name, &edit_value) {
-                    Ok(()) => {
-                        *status_message = format!("Updated material param: {}", param.name);
-                    }
-                    Err(e) => {
-                        *status_message = format!("Material update failed: {e}");
-                    }
-                }
-                let _ = stage.undo_end();
+        ui.horizontal(|ui| {
+            ui.label(theme::subdued(&label));
+
+            let id = ui.make_persistent_id(format!("material_param_{}", param.name));
+            let mut edit_value = ui
+                .data(|d| d.get_temp::<String>(id))
+                .unwrap_or_else(|| param.value.clone());
+            let response = ui.text_edit_singleline(&mut edit_value);
+            if response.changed() {
+                ui.data_mut(|d| d.insert_temp(id, edit_value.clone()));
             }
-            ui.data_mut(|d| d.remove_temp::<String>(id));
-        }
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if edit_value != param.value {
+                    let _ = stage.undo_begin();
+                    match material_prim.set_material_param(&param.name, &edit_value) {
+                        Ok(()) => {
+                            *status_message = format!("Updated material param: {}", param.name);
+                        }
+                        Err(e) => {
+                            *status_message = format!("Material update failed: {e}");
+                        }
+                    }
+                    let _ = stage.undo_end();
+                }
+                ui.data_mut(|d| d.remove_temp::<String>(id));
+            }
+        });
     }
 }
 

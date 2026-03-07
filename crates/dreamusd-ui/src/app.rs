@@ -3,6 +3,7 @@ mod render;
 mod selection;
 
 use eframe::egui;
+use egui::Frame;
 
 use crate::app::selection::find_prim_recursive;
 use crate::panels::{HierarchyPanel, PropertiesPanel};
@@ -277,6 +278,7 @@ fn light_kind(type_name: &str, name: &str) -> Option<LightKind> {
 
 impl DreamUsdApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_scene: Option<PathBuf>) -> Self {
+        crate::theme::apply(&cc.egui_ctx);
         let mut app = Self::default();
         app.render_state = cc.wgpu_render_state.clone();
         if let Some(path) = initial_scene {
@@ -1862,7 +1864,9 @@ impl eframe::App for DreamUsdApp {
         self.update_frame_timing();
 
         // Menu bar
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+        egui::TopBottomPanel::top("menu_bar")
+            .frame(crate::theme::toolbar_frame())
+            .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open        Ctrl+O").clicked() {
@@ -1896,17 +1900,19 @@ impl eframe::App for DreamUsdApp {
         });
 
         // Status bar
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("status_bar")
+            .frame(crate::theme::status_bar_frame())
+            .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(&self.status_message);
+                ui.label(crate::theme::subdued(&self.status_message));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.monospace(self.fps_label());
+                    ui.monospace(crate::theme::subdued(&self.fps_label()).small());
                     ui.separator();
-                    ui.monospace(self.render_stats_label());
+                    ui.monospace(crate::theme::subdued(&self.render_stats_label()).small());
                     ui.separator();
                     self.draw_render_delegate_combo(ui, "status_bar_render_delegate");
                     ui.separator();
-                    if ui.button("Frame (F)").clicked() {
+                    if ui.small_button("Frame").clicked() {
                         self.focus_selected_prim();
                     }
                     ui.separator();
@@ -1927,18 +1933,21 @@ impl eframe::App for DreamUsdApp {
 
         // Scene hierarchy (left)
         egui::SidePanel::left("scene_hierarchy")
-            .default_width(200.0)
+            .default_width(220.0)
+            .frame(crate::theme::sidebar_frame())
             .show(ctx, |ui| {
-                ui.heading("Scene Hierarchy");
                 ui.horizontal(|ui| {
-                    if ui.button("Delete").clicked() {
-                        self.delete_selected_prim();
-                    }
-                    if ui.button("Focus").clicked() {
-                        self.focus_selected_prim();
-                    }
+                    ui.label(crate::theme::panel_title("HIERARCHY"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Focus").clicked() {
+                            self.focus_selected_prim();
+                        }
+                        if ui.small_button("Delete").clicked() {
+                            self.delete_selected_prim();
+                        }
+                    });
                 });
-                ui.separator();
+                ui.add_space(4.0);
                 self.hierarchy.show(ui, self.stage.as_ref());
             });
 
@@ -1956,10 +1965,11 @@ impl eframe::App for DreamUsdApp {
         })();
 
         egui::SidePanel::right("properties")
-            .default_width(250.0)
+            .default_width(260.0)
+            .frame(crate::theme::sidebar_frame())
             .show(ctx, |ui| {
-                ui.heading("Properties");
-                ui.separator();
+                ui.label(crate::theme::panel_title("PROPERTIES"));
+                ui.add_space(4.0);
                 PropertiesPanel::show(
                     ui,
                     self.stage.as_ref(),
@@ -1974,81 +1984,95 @@ impl eframe::App for DreamUsdApp {
         self.show_renderer_settings_window(ctx);
 
         // 3D Viewport (center)
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let current_label = DISPLAY_MODES[self.current_display_mode].0;
-                egui::ComboBox::from_id_salt("viewport_toolbar_display_mode")
-                    .selected_text(format!("Mode: {current_label}"))
-                    .show_ui(ui, |ui| {
-                        for (i, (name, _)) in DISPLAY_MODES.iter().enumerate() {
-                            ui.selectable_value(&mut self.current_display_mode, i, *name);
-                        }
-                    });
-
-                let current_complexity = VIEWPORT_COMPLEXITIES[self.current_complexity].0;
-                egui::ComboBox::from_id_salt("viewport_toolbar_complexity")
-                    .selected_text(format!("Complexity: {current_complexity}"))
-                    .show_ui(ui, |ui| {
-                        for (i, (name, _)) in VIEWPORT_COMPLEXITIES.iter().enumerate() {
-                            ui.selectable_value(&mut self.current_complexity, i, *name);
-                        }
-                    });
-
-                self.draw_renderer_aov_combo(ui, "viewport_toolbar_aov");
-
-                ui.menu_button("View", |ui| {
-                    ui.checkbox(&mut self.show_grid, "Grid");
-                    ui.checkbox(&mut self.show_axis, "Axis");
-                    ui.checkbox(&mut self.show_lights, "Lights");
-                    ui.checkbox(&mut self.show_shadows, "Shadows");
-                    if ui
-                        .checkbox(
-                            &mut self.auto_compute_clipping_planes,
-                            "Auto Compute Clipping Planes",
-                        )
-                        .changed()
-                    {
-                        if self.auto_compute_clipping_planes {
-                            self.sync_manual_clip_from_camera();
-                        }
-                        self.invalidate_auto_clip();
-                        if !self.auto_compute_clipping_planes {
-                            self.restore_manual_clip();
-                        }
-                        self.viewport_interaction_frames = 2;
-                        ui.ctx().request_repaint();
-                    }
-                    ui.separator();
-                    ui.menu_button("Included Purposes", |ui| {
-                        ui.checkbox(&mut self.show_guides, "Guide");
-                        ui.checkbox(&mut self.show_proxy, "Proxy");
-                        ui.checkbox(&mut self.show_render, "Render");
-                    });
-                    ui.checkbox(&mut self.enable_scene_materials, "Scene Materials");
-                    ui.checkbox(&mut self.cull_backfaces, "Cull Backfaces");
-                    ui.checkbox(
-                        &mut self.dome_light_textures_visible,
-                        "Dome Light Camera Visibility",
-                    );
-                    ui.separator();
-                    ui.menu_button(format!("Anti-Aliasing: {}", self.aa_mode.label()), |ui| {
-                        for &mode in AntiAliasMode::all() {
-                            if ui.selectable_label(self.aa_mode == mode, mode.label()).clicked() {
-                                self.aa_mode = mode;
-                                ui.close_menu();
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(crate::theme::app_background()))
+            .show(ctx, |ui| {
+            // Viewport toolbar
+            crate::theme::toolbar_frame().show(ui, |ui: &mut egui::Ui| {
+                ui.horizontal(|ui| {
+                    let current_label = DISPLAY_MODES[self.current_display_mode].0;
+                    egui::ComboBox::from_id_salt("viewport_toolbar_display_mode")
+                        .selected_text(current_label)
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for (i, (name, _)) in DISPLAY_MODES.iter().enumerate() {
+                                ui.selectable_value(&mut self.current_display_mode, i, *name);
                             }
+                        });
+
+                    ui.separator();
+
+                    let current_complexity = VIEWPORT_COMPLEXITIES[self.current_complexity].0;
+                    egui::ComboBox::from_id_salt("viewport_toolbar_complexity")
+                        .selected_text(current_complexity)
+                        .width(80.0)
+                        .show_ui(ui, |ui| {
+                            for (i, (name, _)) in VIEWPORT_COMPLEXITIES.iter().enumerate() {
+                                ui.selectable_value(&mut self.current_complexity, i, *name);
+                            }
+                        });
+
+                    ui.separator();
+
+                    self.draw_renderer_aov_combo(ui, "viewport_toolbar_aov");
+
+                    ui.separator();
+
+                    ui.menu_button("View", |ui| {
+                        ui.checkbox(&mut self.show_grid, "Grid");
+                        ui.checkbox(&mut self.show_axis, "Axis");
+                        ui.checkbox(&mut self.show_lights, "Lights");
+                        ui.checkbox(&mut self.show_shadows, "Shadows");
+                        if ui
+                            .checkbox(
+                                &mut self.auto_compute_clipping_planes,
+                                "Auto Clipping",
+                            )
+                            .changed()
+                        {
+                            if self.auto_compute_clipping_planes {
+                                self.sync_manual_clip_from_camera();
+                            }
+                            self.invalidate_auto_clip();
+                            if !self.auto_compute_clipping_planes {
+                                self.restore_manual_clip();
+                            }
+                            self.viewport_interaction_frames = 2;
+                            ui.ctx().request_repaint();
+                        }
+                        ui.separator();
+                        ui.menu_button("Purposes", |ui| {
+                            ui.checkbox(&mut self.show_guides, "Guide");
+                            ui.checkbox(&mut self.show_proxy, "Proxy");
+                            ui.checkbox(&mut self.show_render, "Render");
+                        });
+                        ui.checkbox(&mut self.enable_scene_materials, "Materials");
+                        ui.checkbox(&mut self.cull_backfaces, "Cull Backfaces");
+                        ui.checkbox(
+                            &mut self.dome_light_textures_visible,
+                            "Dome Light Visibility",
+                        );
+                        ui.separator();
+                        ui.menu_button(format!("AA: {}", self.aa_mode.label()), |ui| {
+                            for &mode in AntiAliasMode::all() {
+                                if ui.selectable_label(self.aa_mode == mode, mode.label()).clicked() {
+                                    self.aa_mode = mode;
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    });
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Settings").clicked() {
+                            self.renderer_settings_open = true;
+                        }
+                        if ui.small_button("Camera").clicked() {
+                            self.camera_settings_open = true;
                         }
                     });
                 });
-
-                if ui.button("Camera").clicked() {
-                    self.camera_settings_open = true;
-                }
-                if ui.button("Renderer Settings").clicked() {
-                    self.renderer_settings_open = true;
-                }
             });
-            ui.separator();
 
             let rect = ui.available_rect_before_wrap();
             self.viewport_rect = rect;
