@@ -247,7 +247,7 @@ pub fn status_bar_frame() -> Frame {
 
 pub fn panel_title(text: &str) -> RichText {
     RichText::new(text)
-        .text_style(TextStyle::Name("PanelTitle".into()))
+        .font(FontId::new(13.0, FontFamily::Proportional))
         .strong()
         .color(text_color())
         .extra_letter_spacing(0.3)
@@ -255,7 +255,7 @@ pub fn panel_title(text: &str) -> RichText {
 
 pub fn eyebrow(text: &str) -> RichText {
     RichText::new(text)
-        .text_style(TextStyle::Name("Eyebrow".into()))
+        .font(FontId::new(10.0, FontFamily::Proportional))
         .color(muted_text_color())
         .extra_letter_spacing(1.0)
 }
