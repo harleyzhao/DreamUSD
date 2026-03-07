@@ -2480,7 +2480,7 @@ impl eframe::App for DreamUsdApp {
             let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
 
             // Detect which gizmo axis is hovered (must happen before drag handling)
-            let hovered_handle = if matches!(
+            let hovered_handle = if self.dragging_handle.is_none() && matches!(
                 self.gizmo_mode,
                 GizmoMode::Translate | GizmoMode::Rotate | GizmoMode::Scale
             ) {
@@ -2496,8 +2496,13 @@ impl eframe::App for DreamUsdApp {
             } else {
                 None
             };
+            let display_hovered_handle = if self.dragging_handle.is_some() {
+                None
+            } else {
+                hovered_handle
+            };
 
-            if hovered_handle.is_some() || self.dragging_handle.is_some() {
+            if display_hovered_handle.is_some() || self.dragging_handle.is_some() {
                 ui.output_mut(|o| {
                     o.cursor_icon = egui::CursorIcon::Grab;
                 });
@@ -2545,7 +2550,7 @@ impl eframe::App for DreamUsdApp {
 
             if response.clicked_by(egui::PointerButton::Primary)
                 && self.dragging_handle.is_none()
-                && hovered_handle.is_none()
+                && display_hovered_handle.is_none()
             {
                 if let Some(pointer_pos) = response.interact_pointer_pos() {
                     self.hierarchy.selected_path = self.pick_prim_in_viewport(rect, pointer_pos);
@@ -2603,13 +2608,31 @@ impl eframe::App for DreamUsdApp {
                     match self.gizmo_mode {
                         GizmoMode::Select => {}
                         GizmoMode::Translate => {
-                            self.draw_translate_gizmo(ui, rect, pos, axis_dirs, hovered_handle);
+                            self.draw_translate_gizmo(
+                                ui,
+                                rect,
+                                pos,
+                                axis_dirs,
+                                display_hovered_handle,
+                            );
                         }
                         GizmoMode::Rotate => {
-                            self.draw_rotate_gizmo(ui, rect, pos, axis_dirs, hovered_handle);
+                            self.draw_rotate_gizmo(
+                                ui,
+                                rect,
+                                pos,
+                                axis_dirs,
+                                display_hovered_handle,
+                            );
                         }
                         GizmoMode::Scale => {
-                            self.draw_scale_gizmo(ui, rect, pos, axis_dirs, hovered_handle);
+                            self.draw_scale_gizmo(
+                                ui,
+                                rect,
+                                pos,
+                                axis_dirs,
+                                display_hovered_handle,
+                            );
                         }
                     }
                 }
