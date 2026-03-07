@@ -35,6 +35,9 @@ typedef enum {
     DU_DISPLAY_FLAT_SHADED = 3,
     DU_DISPLAY_POINTS = 4,
     DU_DISPLAY_TEXTURED = 5,
+    DU_DISPLAY_GEOM_ONLY = 6,
+    DU_DISPLAY_GEOM_FLAT = 7,
+    DU_DISPLAY_GEOM_SMOOTH = 8,
 } DuDisplayMode;
 
 // Opaque handles
@@ -49,6 +52,21 @@ typedef struct {
     const char* value;
     bool is_texture;
 } DuMaterialParam;
+
+typedef enum {
+    DU_RENDERER_SETTING_FLAG = 0,
+    DU_RENDERER_SETTING_INT = 1,
+    DU_RENDERER_SETTING_FLOAT = 2,
+    DU_RENDERER_SETTING_STRING = 3,
+} DuRendererSettingType;
+
+typedef struct {
+    const char* key;
+    const char* name;
+    DuRendererSettingType type;
+    const char* current_value;
+    const char* default_value;
+} DuRendererSetting;
 
 // Log callback
 typedef void (*DuLogCallback)(DuLogLevel level, const char* message);
@@ -78,7 +96,14 @@ DuStatus du_prim_get_name(DuPrim* prim, const char** out);
 
 // --- Transform ---
 DuStatus du_xform_get_local(DuPrim* prim, double matrix[16]);
+DuStatus du_xform_get_world(DuPrim* prim, double matrix[16]);
+DuStatus du_xform_get_translate(DuPrim* prim, double xyz[3]);
+DuStatus du_xform_get_rotate(DuPrim* prim, double xyz[3]);
+DuStatus du_xform_get_scale(DuPrim* prim, double xyz[3]);
+DuStatus du_xform_get_pivot(DuPrim* prim, double xyz[3]);
+DuStatus du_xform_get_world_pivot(DuPrim* prim, double xyz[3]);
 DuStatus du_xform_set_translate(DuPrim* prim, double x, double y, double z);
+DuStatus du_xform_set_translate_world(DuPrim* prim, double x, double y, double z);
 DuStatus du_xform_set_rotate(DuPrim* prim, double x, double y, double z);
 DuStatus du_xform_set_scale(DuPrim* prim, double x, double y, double z);
 
@@ -89,6 +114,7 @@ DuStatus du_attr_set_value_from_string(DuPrim* prim, const char* name, const cha
 
 // --- Variants ---
 DuStatus du_variant_get_sets(DuPrim* prim, const char*** out, uint32_t* count);
+DuStatus du_variant_get_names(DuPrim* prim, const char* set_name, const char*** out, uint32_t* count);
 DuStatus du_variant_get_selection(DuPrim* prim, const char* set_name, const char** out);
 DuStatus du_variant_set_selection(DuPrim* prim, const char* set_name, const char* variant);
 
@@ -107,6 +133,14 @@ DuStatus du_hydra_create_with_vulkan(
 DuStatus du_hydra_render(DuHydraEngine* engine, uint32_t width, uint32_t height);
 // CPU framebuffer readback (platform-independent)
 DuStatus du_hydra_get_framebuffer(DuHydraEngine* engine, uint8_t** rgba, uint32_t* width, uint32_t* height);
+// Native GPU texture handle for the current color AOV.
+// On macOS this is an id<MTLTexture> cast to uint64_t.
+DuStatus du_hydra_get_native_texture(
+    DuHydraEngine* engine,
+    void* texture,
+    uint32_t* width,
+    uint32_t* height
+);
 // Vulkan image access (when using Vulkan creation path)
 DuStatus du_hydra_get_vk_image(
     DuHydraEngine* engine,
@@ -118,10 +152,28 @@ DuStatus du_hydra_get_vk_image(
 );
 DuStatus du_hydra_get_render_semaphore(DuHydraEngine* engine, void* semaphore); // VkSemaphore*
 DuStatus du_hydra_set_camera(DuHydraEngine* engine, double eye[3], double target[3], double up[3]);
+DuStatus du_hydra_set_camera_lens(
+    DuHydraEngine* engine,
+    double fov_y_radians,
+    double near_plane,
+    double far_plane
+);
+DuStatus du_hydra_compute_auto_clip(
+    DuHydraEngine* engine,
+    double* near_plane,
+    double* far_plane
+);
 DuStatus du_hydra_set_display_mode(DuHydraEngine* engine, DuDisplayMode mode);
 DuStatus du_hydra_set_enable_lighting(DuHydraEngine* engine, bool enable);
 DuStatus du_hydra_set_enable_shadows(DuHydraEngine* engine, bool enable);
 DuStatus du_hydra_set_msaa(DuHydraEngine* engine, bool enable);
+DuStatus du_hydra_set_complexity(DuHydraEngine* engine, float complexity);
+DuStatus du_hydra_set_show_guides(DuHydraEngine* engine, bool enable);
+DuStatus du_hydra_set_show_proxy(DuHydraEngine* engine, bool enable);
+DuStatus du_hydra_set_show_render(DuHydraEngine* engine, bool enable);
+DuStatus du_hydra_set_cull_backfaces(DuHydraEngine* engine, bool enable);
+DuStatus du_hydra_set_enable_scene_materials(DuHydraEngine* engine, bool enable);
+DuStatus du_hydra_set_dome_light_camera_visibility(DuHydraEngine* engine, bool enable);
 // Project a 3D world point to 2D screen coordinates using the same matrices as the render.
 // Returns screen_xy[0]=x, screen_xy[1]=y in pixel coordinates within the viewport.
 // Returns DU_ERR_INVALID if the point is behind the camera.
@@ -131,12 +183,30 @@ DuStatus du_hydra_project_point(
     uint32_t viewport_w, uint32_t viewport_h,
     double screen_xy[2]
 );
+DuStatus du_hydra_pick(
+    DuHydraEngine* engine,
+    double screen_x,
+    double screen_y,
+    uint32_t viewport_w,
+    uint32_t viewport_h,
+    const char** out_path
+);
+DuStatus du_hydra_set_selection(DuHydraEngine* engine, const char* selected_path);
+DuStatus du_hydra_poll_async_updates(DuHydraEngine* engine, bool* changed);
 void     du_hydra_destroy(DuHydraEngine* engine);
 
 // --- Render Delegates ---
 DuStatus du_rd_list_available(const char*** names, uint32_t* count);
 DuStatus du_rd_get_current(DuHydraEngine* engine, const char** name);
 DuStatus du_rd_set_current(DuHydraEngine* engine, const char* name);
+DuStatus du_rd_get_aovs(DuHydraEngine* engine, const char*** names, uint32_t* count);
+DuStatus du_rd_get_current_aov(DuHydraEngine* engine, const char** name);
+DuStatus du_rd_set_current_aov(DuHydraEngine* engine, const char* name);
+DuStatus du_rd_get_settings(DuHydraEngine* engine, DuRendererSetting** settings, uint32_t* count);
+DuStatus du_rd_set_setting_bool(DuHydraEngine* engine, const char* key, bool value);
+DuStatus du_rd_set_setting_int(DuHydraEngine* engine, const char* key, int value);
+DuStatus du_rd_set_setting_float(DuHydraEngine* engine, const char* key, float value);
+DuStatus du_rd_set_setting_string(DuHydraEngine* engine, const char* key, const char* value);
 
 // --- Material ---
 DuStatus du_material_get_binding(DuPrim* prim, const char** material_path);
@@ -155,6 +225,7 @@ void du_free_string(char* s);
 void du_free_string_array(const char** arr, uint32_t count);
 void du_free_prim_array(DuPrim** arr, uint32_t count);
 void du_free_material_params(DuMaterialParam* params, uint32_t count);
+void du_free_renderer_settings(DuRendererSetting* settings, uint32_t count);
 
 #ifdef __cplusplus
 }

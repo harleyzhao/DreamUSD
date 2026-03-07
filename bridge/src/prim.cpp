@@ -13,10 +13,12 @@
 #ifdef HAS_USD
 
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usd/editContext.h>
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/attribute.h>
 #include <pxr/usd/usd/variantSets.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/sdf/changeBlock.h>
 #include <pxr/usd/sdf/copyUtils.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/base/tf/token.h>
@@ -102,7 +104,33 @@ DuStatus du_prim_remove(DuStage* stage, const char* path) {
     DU_CHECK_NULL(path);
 
     auto stagePtr = du_stage_get_ptr(stage);
-    if (!stagePtr->RemovePrim(SdfPath(path))) {
+    const SdfPath primPath(path);
+
+    bool removedAny = false;
+    {
+        SdfChangeBlock changeBlock;
+
+        if (const SdfLayerHandle sessionLayer = stagePtr->GetSessionLayer()) {
+            UsdEditContext sessionContext(
+                stagePtr,
+                stagePtr->GetEditTargetForLocalLayer(sessionLayer));
+            removedAny = stagePtr->RemovePrim(primPath) || removedAny;
+        }
+
+        if (const SdfLayerHandle rootLayer = stagePtr->GetRootLayer()) {
+            UsdEditContext rootContext(
+                stagePtr,
+                stagePtr->GetEditTargetForLocalLayer(rootLayer));
+            removedAny = stagePtr->RemovePrim(primPath) || removedAny;
+        }
+    }
+
+    if (!removedAny) {
+        UsdPrim prim = stagePtr->GetPrimAtPath(primPath);
+        if (prim && prim.SetActive(false)) {
+            return DU_OK;
+        }
+
         du_set_last_error(std::string("Failed to remove prim at: ") + path);
         return DU_ERR_USD;
     }
@@ -247,6 +275,31 @@ DuStatus du_variant_get_sets(DuPrim* prim, const char*** out, uint32_t* count) {
     return DU_OK;
 }
 
+DuStatus du_variant_get_names(DuPrim* prim, const char* set_name, const char*** out, uint32_t* count) {
+    DU_CHECK_NULL(prim);
+    DU_CHECK_NULL(set_name);
+    DU_CHECK_NULL(out);
+    DU_CHECK_NULL(count);
+
+    auto variantSet = prim->prim.GetVariantSet(set_name);
+    if (!variantSet.IsValid()) {
+        du_set_last_error(std::string("Variant set not found: ") + set_name);
+        return DU_ERR_INVALID;
+    }
+
+    auto names = variantSet.GetVariantNames();
+    *count = (uint32_t)names.size();
+    if (names.empty()) {
+        *out = nullptr;
+        return DU_OK;
+    }
+    *out = (const char**)malloc(sizeof(const char*) * names.size());
+    for (size_t i = 0; i < names.size(); i++) {
+        (*out)[i] = du_strdup(names[i]);
+    }
+    return DU_OK;
+}
+
 DuStatus du_variant_get_selection(DuPrim* prim, const char* set_name, const char** out) {
     DU_CHECK_NULL(prim);
     DU_CHECK_NULL(set_name);
@@ -296,6 +349,17 @@ void du_free_material_params(DuMaterialParam* params, uint32_t count) {
         free((void*)params[i].value);
     }
     free(params);
+}
+
+void du_free_renderer_settings(DuRendererSetting* settings, uint32_t count) {
+    if (!settings) return;
+    for (uint32_t i = 0; i < count; i++) {
+        free((void*)settings[i].key);
+        free((void*)settings[i].name);
+        free((void*)settings[i].current_value);
+        free((void*)settings[i].default_value);
+    }
+    free(settings);
 }
 
 } // extern "C"
@@ -366,6 +430,11 @@ DuStatus du_variant_get_sets(DuPrim*, const char***, uint32_t*) {
     return DU_ERR_INVALID;
 }
 
+DuStatus du_variant_get_names(DuPrim*, const char*, const char***, uint32_t*) {
+    du_set_last_error("USD not available (stub build)");
+    return DU_ERR_INVALID;
+}
+
 DuStatus du_variant_get_selection(DuPrim*, const char*, const char**) {
     du_set_last_error("USD not available (stub build)");
     return DU_ERR_INVALID;
@@ -400,6 +469,17 @@ void du_free_material_params(DuMaterialParam* params, uint32_t count) {
         free((void*)params[i].value);
     }
     free(params);
+}
+
+void du_free_renderer_settings(DuRendererSetting* settings, uint32_t count) {
+    if (!settings) return;
+    for (uint32_t i = 0; i < count; i++) {
+        free((void*)settings[i].key);
+        free((void*)settings[i].name);
+        free((void*)settings[i].current_value);
+        free((void*)settings[i].default_value);
+    }
+    free(settings);
 }
 
 } // extern "C"

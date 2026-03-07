@@ -35,8 +35,8 @@ impl Default for ViewportCamera {
             target,
             up: Vec3::Y,
             fov: 60.0_f32.to_radians(),
-            near: 0.01,
-            far: 10000.0,
+            near: 1.0,
+            far: 2_000_000.0,
             mode: CameraMode::Orbit,
             orbit_distance,
             yaw,
@@ -51,6 +51,8 @@ impl ViewportCamera {
         self.up = Vec3::Z;
         self.eye = Vec3::new(10.0, -10.0, 5.0);
         self.target = Vec3::ZERO;
+        self.near = 1.0;
+        self.far = 2_000_000.0;
         let diff = self.eye - self.target;
         self.orbit_distance = diff.length();
         // For Z-up: yaw is rotation around Z, pitch is elevation from XY plane
@@ -63,6 +65,8 @@ impl ViewportCamera {
         self.up = Vec3::Y;
         self.eye = Vec3::new(0.0, 5.0, 10.0);
         self.target = Vec3::ZERO;
+        self.near = 1.0;
+        self.far = 2_000_000.0;
         let diff = self.eye - self.target;
         self.orbit_distance = diff.length();
         self.yaw = diff.x.atan2(diff.z);
@@ -81,19 +85,20 @@ impl ViewportCamera {
     }
 
     /// Pan the camera (translate both eye and target) by the given screen-space deltas.
-    pub fn pan(&mut self, dx: f32, dy: f32) {
+    pub fn pan_pixels(&mut self, dx: f32, dy: f32, viewport_height: f32) {
         let forward = (self.target - self.eye).normalize();
         let right = forward.cross(self.up).normalize();
         let cam_up = right.cross(forward).normalize();
-        let sensitivity = 0.01 * self.orbit_distance;
-        let offset = right * (-dx * sensitivity) + cam_up * (-dy * sensitivity);
+        let pixels_to_world = (2.0 * self.orbit_distance * (self.fov * 0.5).tan())
+            / viewport_height.max(1.0);
+        let offset = right * (-dx * pixels_to_world) + cam_up * (dy * pixels_to_world);
         self.eye += offset;
         self.target += offset;
     }
 
-    /// Zoom (dolly) the camera toward or away from the target.
-    pub fn zoom(&mut self, delta: f32) {
-        let factor = 1.0 - delta * 0.1;
+    /// Zoom (dolly) the camera toward or away from the target using scroll-wheel delta.
+    pub fn zoom_scroll(&mut self, delta: f32) {
+        let factor = 1.0 - (delta / 1000.0).clamp(-0.5, 0.5);
         self.orbit_distance = (self.orbit_distance * factor).max(0.01);
         self.update_eye_from_orbit();
     }

@@ -26,7 +26,6 @@ impl HierarchyPanel {
             ui.label("Filter:");
             ui.text_edit_singleline(&mut self.filter_text);
         });
-
         ui.separator();
 
         match stage {
@@ -105,20 +104,24 @@ impl HierarchyPanel {
 
         if children.is_empty() {
             // Leaf node — use a selectable label
-            if ui.selectable_label(is_selected, &label).clicked() {
+            let response = self.show_tree_item(ui, &label, is_selected, false);
+            if response.clicked() {
                 self.selected_path = Some(path);
             }
         } else {
             // Branch node — use a collapsing header
             let is_root = path == "/" || name.is_empty();
             let id = ui.make_persistent_id(&path);
-            egui::collapsing_header::CollapsingState::load_with_default_open(
+            let state = egui::collapsing_header::CollapsingState::load_with_default_open(
                 ui.ctx(),
                 id,
                 is_root,
-            )
+            );
+            let is_ancestor_of_selected = !is_selected && self.path_contains_selection(&path);
+            state
             .show_header(ui, |ui| {
-                if ui.selectable_label(is_selected, &label).clicked() {
+                let response = self.show_tree_item(ui, &label, is_selected, is_ancestor_of_selected);
+                if response.clicked() {
                     self.selected_path = Some(path.clone());
                 }
             })
@@ -128,5 +131,54 @@ impl HierarchyPanel {
                 }
             });
         }
+    }
+
+    fn show_tree_item(
+        &self,
+        ui: &mut egui::Ui,
+        label: &str,
+        is_selected: bool,
+        is_ancestor_of_selected: bool,
+    ) -> egui::Response {
+        if is_selected {
+            return ui.add(
+                egui::Button::new(label)
+                    .selected(true)
+                    .wrap_mode(egui::TextWrapMode::Truncate),
+            );
+        }
+
+        if is_ancestor_of_selected {
+            return ui.add(
+                egui::Button::new(label)
+                    .fill(egui::Color32::from_rgba_unmultiplied(120, 120, 120, 96))
+                    .stroke(egui::Stroke::NONE)
+                    .wrap_mode(egui::TextWrapMode::Truncate),
+            );
+        }
+
+        ui.add(
+            egui::Button::new(label)
+                .frame(false)
+                .wrap_mode(egui::TextWrapMode::Truncate),
+        )
+    }
+
+    fn path_contains_selection(&self, path: &str) -> bool {
+        let Some(selected_path) = self.selected_path.as_deref() else {
+            return false;
+        };
+
+        if path == "/" || path.is_empty() {
+            return true;
+        }
+
+        if selected_path == path {
+            return true;
+        }
+
+        selected_path
+            .strip_prefix(path)
+            .is_some_and(|suffix| suffix.starts_with('/'))
     }
 }

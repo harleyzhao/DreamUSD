@@ -1,6 +1,6 @@
 use crate::error::{check, DuError};
 use crate::stage::Stage;
-use dreamusd_sys::{self, DuDisplayMode};
+use dreamusd_sys::{self, DuDisplayMode, DuRendererSettingType};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_void;
 use std::ptr;
@@ -21,6 +21,9 @@ pub enum DisplayMode {
     FlatShaded,
     Points,
     Textured,
+    GeomOnly,
+    GeomFlat,
+    GeomSmooth,
 }
 
 impl From<DisplayMode> for DuDisplayMode {
@@ -32,6 +35,9 @@ impl From<DisplayMode> for DuDisplayMode {
             DisplayMode::FlatShaded => DuDisplayMode::FlatShaded,
             DisplayMode::Points => DuDisplayMode::Points,
             DisplayMode::Textured => DuDisplayMode::Textured,
+            DisplayMode::GeomOnly => DuDisplayMode::GeomOnly,
+            DisplayMode::GeomFlat => DuDisplayMode::GeomFlat,
+            DisplayMode::GeomSmooth => DuDisplayMode::GeomSmooth,
         }
     }
 }
@@ -43,6 +49,41 @@ pub struct VkImageInfo {
     pub format: u32,
     pub width: u32,
     pub height: u32,
+}
+
+/// Information about the platform-native texture produced by the color AOV.
+pub struct NativeTextureInfo {
+    pub texture: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererSettingType {
+    Flag,
+    Int,
+    Float,
+    String,
+}
+
+impl From<DuRendererSettingType> for RendererSettingType {
+    fn from(value: DuRendererSettingType) -> Self {
+        match value {
+            DuRendererSettingType::Flag => Self::Flag,
+            DuRendererSettingType::Int => Self::Int,
+            DuRendererSettingType::Float => Self::Float,
+            DuRendererSettingType::String => Self::String,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RendererSetting {
+    pub key: String,
+    pub name: String,
+    pub setting_type: RendererSettingType,
+    pub current_value: String,
+    pub default_value: String,
 }
 
 impl HydraEngine {
@@ -125,6 +166,26 @@ impl HydraEngine {
         })
     }
 
+    /// Retrieve the platform-native texture for the color AOV.
+    pub fn get_native_texture(&self) -> Result<NativeTextureInfo, DuError> {
+        let mut texture: u64 = 0;
+        let mut width: u32 = 0;
+        let mut height: u32 = 0;
+        unsafe {
+            check(dreamusd_sys::du_hydra_get_native_texture(
+                self.raw,
+                &mut texture as *mut u64 as *mut c_void,
+                &mut width,
+                &mut height,
+            ))?;
+        }
+        Ok(NativeTextureInfo {
+            texture,
+            width,
+            height,
+        })
+    }
+
     /// Get the Vulkan semaphore that signals when rendering is complete.
     pub fn get_render_semaphore(&self) -> Result<u64, DuError> {
         let mut semaphore: u64 = 0;
@@ -157,6 +218,37 @@ impl HydraEngine {
         }
     }
 
+    /// Set the lens parameters for the free camera used by Hydra.
+    pub fn set_camera_lens(
+        &self,
+        fov_y_radians: f64,
+        near_plane: f64,
+        far_plane: f64,
+    ) -> Result<(), DuError> {
+        unsafe {
+            check(dreamusd_sys::du_hydra_set_camera_lens(
+                self.raw,
+                fov_y_radians,
+                near_plane,
+                far_plane,
+            ))
+        }
+    }
+
+    /// Compute automatic clipping planes from the current free camera and scene bounds.
+    pub fn compute_auto_clip(&self) -> Result<(f64, f64), DuError> {
+        let mut near_plane = 0.0f64;
+        let mut far_plane = 0.0f64;
+        unsafe {
+            check(dreamusd_sys::du_hydra_compute_auto_clip(
+                self.raw,
+                &mut near_plane,
+                &mut far_plane,
+            ))?;
+        }
+        Ok((near_plane, far_plane))
+    }
+
     /// Project a 3D world point to 2D screen coordinates using the same
     /// view/projection matrices as the Hydra render. Returns (screen_x, screen_y)
     /// in pixel coordinates within the viewport. Returns None if behind camera.
@@ -183,6 +275,52 @@ impl HydraEngine {
         }
     }
 
+    /// Pick the prim under the given screen-space pixel coordinate.
+    pub fn pick_prim(
+        &self,
+        screen_x: f64,
+        screen_y: f64,
+        viewport_w: u32,
+        viewport_h: u32,
+    ) -> Result<String, DuError> {
+        let mut path: *const std::os::raw::c_char = ptr::null();
+        unsafe {
+            check(dreamusd_sys::du_hydra_pick(
+                self.raw,
+                screen_x,
+                screen_y,
+                viewport_w,
+                viewport_h,
+                &mut path,
+            ))?;
+            Ok(CStr::from_ptr(path).to_string_lossy().into_owned())
+        }
+    }
+
+    /// Update the currently highlighted prim in Hydra.
+    pub fn set_selection(&self, selected_path: Option<&str>) -> Result<(), DuError> {
+        let selected_path = selected_path
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| DuError::Invalid("Selection path contains an interior NUL byte".into()))?;
+        let ptr = selected_path
+            .as_ref()
+            .map_or(ptr::null(), |path| path.as_ptr());
+        unsafe { check(dreamusd_sys::du_hydra_set_selection(self.raw, ptr)) }
+    }
+
+    /// Poll the renderer for asynchronous updates.
+    pub fn poll_async_updates(&self) -> Result<bool, DuError> {
+        let mut changed = false;
+        unsafe {
+            check(dreamusd_sys::du_hydra_poll_async_updates(
+                self.raw,
+                &mut changed,
+            ))?;
+        }
+        Ok(changed)
+    }
+
     /// Enable or disable lighting.
     pub fn set_enable_lighting(&self, enable: bool) -> Result<(), DuError> {
         unsafe {
@@ -201,6 +339,51 @@ impl HydraEngine {
     pub fn set_msaa(&self, enable: bool) -> Result<(), DuError> {
         unsafe {
             check(dreamusd_sys::du_hydra_set_msaa(self.raw, enable))
+        }
+    }
+
+    /// Set the viewport refinement complexity.
+    pub fn set_complexity(&self, complexity: f32) -> Result<(), DuError> {
+        unsafe { check(dreamusd_sys::du_hydra_set_complexity(self.raw, complexity)) }
+    }
+
+    /// Show or hide guide-purpose prims.
+    pub fn set_show_guides(&self, enable: bool) -> Result<(), DuError> {
+        unsafe { check(dreamusd_sys::du_hydra_set_show_guides(self.raw, enable)) }
+    }
+
+    /// Show or hide proxy-purpose prims.
+    pub fn set_show_proxy(&self, enable: bool) -> Result<(), DuError> {
+        unsafe { check(dreamusd_sys::du_hydra_set_show_proxy(self.raw, enable)) }
+    }
+
+    /// Show or hide render-purpose prims.
+    pub fn set_show_render(&self, enable: bool) -> Result<(), DuError> {
+        unsafe { check(dreamusd_sys::du_hydra_set_show_render(self.raw, enable)) }
+    }
+
+    /// Enable or disable backface culling.
+    pub fn set_cull_backfaces(&self, enable: bool) -> Result<(), DuError> {
+        unsafe { check(dreamusd_sys::du_hydra_set_cull_backfaces(self.raw, enable)) }
+    }
+
+    /// Enable or disable scene materials.
+    pub fn set_enable_scene_materials(&self, enable: bool) -> Result<(), DuError> {
+        unsafe {
+            check(dreamusd_sys::du_hydra_set_enable_scene_materials(
+                self.raw,
+                enable,
+            ))
+        }
+    }
+
+    /// Control whether dome lights remain visible to the camera.
+    pub fn set_dome_light_camera_visibility(&self, enable: bool) -> Result<(), DuError> {
+        unsafe {
+            check(dreamusd_sys::du_hydra_set_dome_light_camera_visibility(
+                self.raw,
+                enable,
+            ))
         }
     }
 
@@ -246,6 +429,99 @@ impl HydraEngine {
         let c_name = CString::new(name)
             .map_err(|_| DuError::Invalid("name contains null byte".into()))?;
         unsafe { check(dreamusd_sys::du_rd_set_current(self.raw, c_name.as_ptr())) }
+    }
+
+    /// List renderer AOVs available on the current delegate.
+    pub fn list_renderer_aovs(&self) -> Result<Vec<String>, DuError> {
+        let mut names: *mut *const std::os::raw::c_char = ptr::null_mut();
+        let mut count: u32 = 0;
+        unsafe {
+            check(dreamusd_sys::du_rd_get_aovs(self.raw, &mut names, &mut count))?;
+            let result = (0..count as usize)
+                .map(|i| {
+                    CStr::from_ptr(*names.add(i))
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            dreamusd_sys::du_free_string_array(names, count);
+            Ok(result)
+        }
+    }
+
+    /// Get the currently selected renderer AOV.
+    pub fn current_renderer_aov(&self) -> Result<String, DuError> {
+        let mut name: *const std::os::raw::c_char = ptr::null();
+        unsafe {
+            check(dreamusd_sys::du_rd_get_current_aov(self.raw, &mut name))?;
+            Ok(CStr::from_ptr(name).to_string_lossy().into_owned())
+        }
+    }
+
+    /// Switch the viewport to a different renderer AOV.
+    pub fn set_renderer_aov(&self, name: &str) -> Result<(), DuError> {
+        let c_name = CString::new(name)
+            .map_err(|_| DuError::Invalid("AOV name contains null byte".into()))?;
+        unsafe { check(dreamusd_sys::du_rd_set_current_aov(self.raw, c_name.as_ptr())) }
+    }
+
+    /// Query renderer-specific settings exposed by the active delegate.
+    pub fn renderer_settings(&self) -> Result<Vec<RendererSetting>, DuError> {
+        let mut settings: *mut dreamusd_sys::DuRendererSetting = ptr::null_mut();
+        let mut count: u32 = 0;
+        unsafe {
+            check(dreamusd_sys::du_rd_get_settings(self.raw, &mut settings, &mut count))?;
+            let result = (0..count as usize)
+                .map(|i| {
+                    let setting = &*settings.add(i);
+                    RendererSetting {
+                        key: CStr::from_ptr(setting.key).to_string_lossy().into_owned(),
+                        name: CStr::from_ptr(setting.name).to_string_lossy().into_owned(),
+                        setting_type: setting.r#type.into(),
+                        current_value: CStr::from_ptr(setting.current_value)
+                            .to_string_lossy()
+                            .into_owned(),
+                        default_value: CStr::from_ptr(setting.default_value)
+                            .to_string_lossy()
+                            .into_owned(),
+                    }
+                })
+                .collect();
+            dreamusd_sys::du_free_renderer_settings(settings, count);
+            Ok(result)
+        }
+    }
+
+    pub fn set_renderer_setting_bool(&self, key: &str, value: bool) -> Result<(), DuError> {
+        let c_key = CString::new(key)
+            .map_err(|_| DuError::Invalid("setting key contains null byte".into()))?;
+        unsafe { check(dreamusd_sys::du_rd_set_setting_bool(self.raw, c_key.as_ptr(), value)) }
+    }
+
+    pub fn set_renderer_setting_int(&self, key: &str, value: i32) -> Result<(), DuError> {
+        let c_key = CString::new(key)
+            .map_err(|_| DuError::Invalid("setting key contains null byte".into()))?;
+        unsafe { check(dreamusd_sys::du_rd_set_setting_int(self.raw, c_key.as_ptr(), value)) }
+    }
+
+    pub fn set_renderer_setting_float(&self, key: &str, value: f32) -> Result<(), DuError> {
+        let c_key = CString::new(key)
+            .map_err(|_| DuError::Invalid("setting key contains null byte".into()))?;
+        unsafe { check(dreamusd_sys::du_rd_set_setting_float(self.raw, c_key.as_ptr(), value)) }
+    }
+
+    pub fn set_renderer_setting_string(&self, key: &str, value: &str) -> Result<(), DuError> {
+        let c_key = CString::new(key)
+            .map_err(|_| DuError::Invalid("setting key contains null byte".into()))?;
+        let c_value = CString::new(value)
+            .map_err(|_| DuError::Invalid("setting value contains null byte".into()))?;
+        unsafe {
+            check(dreamusd_sys::du_rd_set_setting_string(
+                self.raw,
+                c_key.as_ptr(),
+                c_value.as_ptr(),
+            ))
+        }
     }
 }
 

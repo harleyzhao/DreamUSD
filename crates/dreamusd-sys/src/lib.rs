@@ -37,6 +37,9 @@ pub enum DuDisplayMode {
     FlatShaded = 3,
     Points = 4,
     Textured = 5,
+    GeomOnly = 6,
+    GeomFlat = 7,
+    GeomSmooth = 8,
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +60,24 @@ pub struct DuMaterialParam {
     pub r#type: *const c_char,
     pub value: *const c_char,
     pub is_texture: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuRendererSettingType {
+    Flag = 0,
+    Int = 1,
+    Float = 2,
+    String = 3,
+}
+
+#[repr(C)]
+pub struct DuRendererSetting {
+    pub key: *const c_char,
+    pub name: *const c_char,
+    pub r#type: DuRendererSettingType,
+    pub current_value: *const c_char,
+    pub default_value: *const c_char,
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +124,14 @@ extern "C" {
 
     // --- Transform ---
     pub fn du_xform_get_local(prim: *mut DuPrim, matrix: *mut f64) -> DuStatus;
+    pub fn du_xform_get_world(prim: *mut DuPrim, matrix: *mut f64) -> DuStatus;
+    pub fn du_xform_get_translate(prim: *mut DuPrim, xyz: *mut f64) -> DuStatus;
+    pub fn du_xform_get_rotate(prim: *mut DuPrim, xyz: *mut f64) -> DuStatus;
+    pub fn du_xform_get_scale(prim: *mut DuPrim, xyz: *mut f64) -> DuStatus;
+    pub fn du_xform_get_pivot(prim: *mut DuPrim, xyz: *mut f64) -> DuStatus;
+    pub fn du_xform_get_world_pivot(prim: *mut DuPrim, xyz: *mut f64) -> DuStatus;
     pub fn du_xform_set_translate(prim: *mut DuPrim, x: f64, y: f64, z: f64) -> DuStatus;
+    pub fn du_xform_set_translate_world(prim: *mut DuPrim, x: f64, y: f64, z: f64) -> DuStatus;
     pub fn du_xform_set_rotate(prim: *mut DuPrim, x: f64, y: f64, z: f64) -> DuStatus;
     pub fn du_xform_set_scale(prim: *mut DuPrim, x: f64, y: f64, z: f64) -> DuStatus;
 
@@ -127,6 +155,12 @@ extern "C" {
     // --- Variants ---
     pub fn du_variant_get_sets(
         prim: *mut DuPrim,
+        out: *mut *mut *const c_char,
+        count: *mut u32,
+    ) -> DuStatus;
+    pub fn du_variant_get_names(
+        prim: *mut DuPrim,
+        set_name: *const c_char,
         out: *mut *mut *const c_char,
         count: *mut u32,
     ) -> DuStatus;
@@ -161,6 +195,12 @@ extern "C" {
         width: *mut u32,
         height: *mut u32,
     ) -> DuStatus;
+    pub fn du_hydra_get_native_texture(
+        engine: *mut DuHydraEngine,
+        texture: *mut c_void,
+        width: *mut u32,
+        height: *mut u32,
+    ) -> DuStatus;
     pub fn du_hydra_get_vk_image(
         engine: *mut DuHydraEngine,
         image: *mut c_void,
@@ -179,6 +219,17 @@ extern "C" {
         target: *mut f64,
         up: *mut f64,
     ) -> DuStatus;
+    pub fn du_hydra_set_camera_lens(
+        engine: *mut DuHydraEngine,
+        fov_y_radians: f64,
+        near_plane: f64,
+        far_plane: f64,
+    ) -> DuStatus;
+    pub fn du_hydra_compute_auto_clip(
+        engine: *mut DuHydraEngine,
+        near_plane: *mut f64,
+        far_plane: *mut f64,
+    ) -> DuStatus;
     pub fn du_hydra_set_display_mode(
         engine: *mut DuHydraEngine,
         mode: DuDisplayMode,
@@ -195,12 +246,56 @@ extern "C" {
         engine: *mut DuHydraEngine,
         enable: bool,
     ) -> DuStatus;
+    pub fn du_hydra_set_complexity(
+        engine: *mut DuHydraEngine,
+        complexity: f32,
+    ) -> DuStatus;
+    pub fn du_hydra_set_show_guides(
+        engine: *mut DuHydraEngine,
+        enable: bool,
+    ) -> DuStatus;
+    pub fn du_hydra_set_show_proxy(
+        engine: *mut DuHydraEngine,
+        enable: bool,
+    ) -> DuStatus;
+    pub fn du_hydra_set_show_render(
+        engine: *mut DuHydraEngine,
+        enable: bool,
+    ) -> DuStatus;
+    pub fn du_hydra_set_cull_backfaces(
+        engine: *mut DuHydraEngine,
+        enable: bool,
+    ) -> DuStatus;
+    pub fn du_hydra_set_enable_scene_materials(
+        engine: *mut DuHydraEngine,
+        enable: bool,
+    ) -> DuStatus;
+    pub fn du_hydra_set_dome_light_camera_visibility(
+        engine: *mut DuHydraEngine,
+        enable: bool,
+    ) -> DuStatus;
     pub fn du_hydra_project_point(
         engine: *mut DuHydraEngine,
         world_xyz: *const f64,
         viewport_w: u32,
         viewport_h: u32,
         screen_xy: *mut f64,
+    ) -> DuStatus;
+    pub fn du_hydra_pick(
+        engine: *mut DuHydraEngine,
+        screen_x: f64,
+        screen_y: f64,
+        viewport_w: u32,
+        viewport_h: u32,
+        out_path: *mut *const c_char,
+    ) -> DuStatus;
+    pub fn du_hydra_set_selection(
+        engine: *mut DuHydraEngine,
+        selected_path: *const c_char,
+    ) -> DuStatus;
+    pub fn du_hydra_poll_async_updates(
+        engine: *mut DuHydraEngine,
+        changed: *mut bool,
     ) -> DuStatus;
     pub fn du_hydra_destroy(engine: *mut DuHydraEngine);
 
@@ -211,6 +306,44 @@ extern "C" {
         name: *mut *const c_char,
     ) -> DuStatus;
     pub fn du_rd_set_current(engine: *mut DuHydraEngine, name: *const c_char) -> DuStatus;
+    pub fn du_rd_get_aovs(
+        engine: *mut DuHydraEngine,
+        names: *mut *mut *const c_char,
+        count: *mut u32,
+    ) -> DuStatus;
+    pub fn du_rd_get_current_aov(
+        engine: *mut DuHydraEngine,
+        name: *mut *const c_char,
+    ) -> DuStatus;
+    pub fn du_rd_set_current_aov(
+        engine: *mut DuHydraEngine,
+        name: *const c_char,
+    ) -> DuStatus;
+    pub fn du_rd_get_settings(
+        engine: *mut DuHydraEngine,
+        settings: *mut *mut DuRendererSetting,
+        count: *mut u32,
+    ) -> DuStatus;
+    pub fn du_rd_set_setting_bool(
+        engine: *mut DuHydraEngine,
+        key: *const c_char,
+        value: bool,
+    ) -> DuStatus;
+    pub fn du_rd_set_setting_int(
+        engine: *mut DuHydraEngine,
+        key: *const c_char,
+        value: i32,
+    ) -> DuStatus;
+    pub fn du_rd_set_setting_float(
+        engine: *mut DuHydraEngine,
+        key: *const c_char,
+        value: f32,
+    ) -> DuStatus;
+    pub fn du_rd_set_setting_string(
+        engine: *mut DuHydraEngine,
+        key: *const c_char,
+        value: *const c_char,
+    ) -> DuStatus;
 
     // --- Material ---
     pub fn du_material_get_binding(
@@ -246,4 +379,5 @@ extern "C" {
     pub fn du_free_string_array(arr: *mut *const c_char, count: u32);
     pub fn du_free_prim_array(arr: *mut *mut DuPrim, count: u32);
     pub fn du_free_material_params(params: *mut DuMaterialParam, count: u32);
+    pub fn du_free_renderer_settings(settings: *mut DuRendererSetting, count: u32);
 }

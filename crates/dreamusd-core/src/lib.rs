@@ -5,5 +5,7 @@ pub mod hydra;
 
 pub use error::DuError;
 pub use stage::Stage;
-pub use prim::Prim;
-pub use hydra::{HydraEngine, DisplayMode, VkImageInfo};
+pub use prim::{MaterialParam, Prim};
+pub use hydra::{
+    DisplayMode, HydraEngine, NativeTextureInfo, RendererSetting, RendererSettingType, VkImageInfo,
+};
