@@ -30,7 +30,7 @@ impl PropertiesPanel {
         let type_name = prim.type_name().unwrap_or_else(|_| String::new());
 
         theme::panel_card_frame().show(ui, |ui: &mut egui::Ui| {
-            ui.label(egui::RichText::new(&path).strong().small());
+            ui.label(egui::RichText::new(&path).strong().small().color(theme::text_color()));
             if !type_name.is_empty() {
                 ui.label(theme::subdued(&format!("Type: {type_name}")));
             }
@@ -39,23 +39,16 @@ impl PropertiesPanel {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             if path.starts_with("/_DefaultLights/") {
-                egui::CollapsingHeader::new("Default Light")
-                    .default_open(true)
-                    .show(ui, |ui| {
+                theme::collapsing_section(ui, "Default Light", true, |ui| {
                     Self::show_default_light_editor(ui, stage, prim);
                 });
             } else if Self::is_light_type(&type_name) {
-                egui::CollapsingHeader::new("Light")
-                    .default_open(true)
-                    .show(ui, |ui| {
+                theme::collapsing_section(ui, "Light", true, |ui| {
                     Self::show_light_editor(ui, stage, prim);
                 });
             }
 
-            // Transform section
-            egui::CollapsingHeader::new("Transform")
-                .default_open(true)
-                .show(ui, |ui| {
+            theme::collapsing_section(ui, "Transform", true, |ui| {
                 let transform_prim = transform_prim.unwrap_or(prim);
                 match (
                     transform_prim.get_local_matrix(),
@@ -64,165 +57,97 @@ impl PropertiesPanel {
                     transform_prim.get_scale(),
                 ) {
                     (Ok(matrix), Ok(translate), Ok(rotate), Ok(scale)) => {
-                        if !std::ptr::eq(transform_prim, prim) {
-                            let transform_path = transform_prim
-                                .path()
-                                .unwrap_or_else(|_| "???".to_string());
-                            ui.label(theme::subdued(&format!("Editing target: {transform_path}")));
-                            ui.add_space(2.0);
-                        }
                         let mut row_counter: usize = 0;
-                        Self::show_vector_editor(
-                            ui,
-                            stage,
-                            transform_prim,
-                            "Translate",
-                            translate,
-                            Prim::set_translate,
-                            &mut row_counter,
-                        );
-                        Self::show_vector_editor(
-                            ui,
-                            stage,
-                            transform_prim,
-                            "Rotate",
-                            rotate,
-                            Prim::set_rotate,
-                            &mut row_counter,
-                        );
-                        Self::show_vector_editor(
-                            ui,
-                            stage,
-                            transform_prim,
-                            "Scale",
-                            scale,
-                            Prim::set_scale,
-                            &mut row_counter,
-                        );
-
-                        ui.collapsing("Full Matrix", |ui| {
+                        Self::show_vector_editor(ui, stage, transform_prim, "Translate", translate, Prim::set_translate, &mut row_counter);
+                        Self::show_vector_editor(ui, stage, transform_prim, "Rotate", rotate, Prim::set_rotate, &mut row_counter);
+                        Self::show_vector_editor(ui, stage, transform_prim, "Scale", scale, Prim::set_scale, &mut row_counter);
+                        theme::collapsing_section(ui, "Full Matrix", false, |ui| {
                             for row in 0..4 {
-                                ui.label(format!(
+                                ui.label(egui::RichText::new(format!(
                                     "[{:.4}, {:.4}, {:.4}, {:.4}]",
-                                    matrix[row],
-                                    matrix[row + 4],
-                                    matrix[row + 8],
-                                    matrix[row + 12],
-                                ));
+                                    matrix[row], matrix[row + 4], matrix[row + 8], matrix[row + 12],
+                                )).color(theme::text_color()));
                             }
                         });
                     }
-                    (Err(e), _, _, _) => {
-                        ui.label(format!("(no transform: {e})"));
-                    }
-                    (_, Err(e), _, _) => {
-                        ui.label(format!("(translate unavailable: {e})"));
-                    }
-                    (_, _, Err(e), _) => {
-                        ui.label(format!("(rotate unavailable: {e})"));
-                    }
-                    (_, _, _, Err(e)) => {
-                        ui.label(format!("(scale unavailable: {e})"));
-                    }
+                    (Err(e), _, _, _) => { ui.label(egui::RichText::new(format!("(no transform: {e})")).color(theme::text_color())); }
+                    (_, Err(e), _, _) => { ui.label(egui::RichText::new(format!("(translate unavailable: {e})")).color(theme::text_color())); }
+                    (_, _, Err(e), _) => { ui.label(egui::RichText::new(format!("(rotate unavailable: {e})")).color(theme::text_color())); }
+                    (_, _, _, Err(e)) => { ui.label(egui::RichText::new(format!("(scale unavailable: {e})")).color(theme::text_color())); }
                 }
             });
 
-            // Attributes section
-            egui::CollapsingHeader::new("Attributes")
-                .default_open(false)
-                .show(ui, |ui| match prim.attribute_names() {
-                Ok(names) => {
-                    if names.is_empty() {
-                        ui.label("(none)");
-                    } else {
-                        for (row_idx, name) in names.iter().enumerate() {
-                            Self::paint_row_bg(ui, row_idx);
-                            ui.horizontal(|ui| {
-                                ui.label(theme::subdued(name));
-                                let val = prim
-                                    .get_attribute(name)
-                                    .unwrap_or_else(|_| "(error)".to_string());
-                                let id = ui.make_persistent_id(format!("attr_{name}"));
-                                let mut edit_val =
-                                    ui.data(|d| d.get_temp::<String>(id).unwrap_or(val.clone()));
-                                let response = ui.text_edit_singleline(&mut edit_val);
-                                if response.changed() {
-                                    ui.data_mut(|d| d.insert_temp(id, edit_val.clone()));
-                                }
-                                if response.lost_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                {
-                                    if edit_val != val {
-                                        if let Some(stage) = stage {
-                                            let _ = stage.undo_begin();
-                                            let _ = prim.set_attribute(name, &edit_val);
-                                            let _ = stage.undo_end();
-                                        } else {
-                                            let _ = prim.set_attribute(name, &edit_val);
+            theme::collapsing_section(ui, "Attributes", false, |ui| {
+                match prim.attribute_names() {
+                    Ok(names) => {
+                        if names.is_empty() {
+                            ui.label(egui::RichText::new("(none)").color(theme::text_color()));
+                        } else {
+                            for (row_idx, name) in names.iter().enumerate() {
+                                Self::paint_row_bg(ui, row_idx);
+                                ui.horizontal(|ui| {
+                                    ui.label(theme::subdued(name));
+                                    let val = prim.get_attribute(name).unwrap_or_else(|_| "(error)".to_string());
+                                    let id = ui.make_persistent_id(format!("attr_{name}"));
+                                    let mut edit_val = ui.data(|d| d.get_temp::<String>(id).unwrap_or(val.clone()));
+                                    let response = ui.text_edit_singleline(&mut edit_val);
+                                    if response.changed() { ui.data_mut(|d| d.insert_temp(id, edit_val.clone())); }
+                                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                        if edit_val != val {
+                                            if let Some(stage) = stage {
+                                                let _ = stage.undo_begin();
+                                                let _ = prim.set_attribute(name, &edit_val);
+                                                let _ = stage.undo_end();
+                                            } else {
+                                                let _ = prim.set_attribute(name, &edit_val);
+                                            }
                                         }
+                                        ui.data_mut(|d| d.remove_temp::<String>(id));
                                     }
-                                    ui.data_mut(|d| d.remove_temp::<String>(id));
-                                }
-                            });
+                                });
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    ui.label(format!("Error: {e}"));
+                    Err(e) => { ui.label(egui::RichText::new(format!("Error: {e}")).color(theme::text_color())); }
                 }
             });
 
-            // Variants section
-            egui::CollapsingHeader::new("Variants")
-                .default_open(false)
-                .show(ui, |ui| match prim.variant_sets() {
-                Ok(sets) => {
-                    if sets.is_empty() {
-                        ui.label("(none)");
-                    } else {
-                        for (row_idx, set_name) in sets.iter().enumerate() {
-                            Self::paint_row_bg(ui, row_idx);
-                            ui.horizontal(|ui| {
-                                ui.label(theme::subdued(set_name));
-                                Self::show_variant_editor(ui, stage, prim, set_name);
-                            });
+            theme::collapsing_section(ui, "Variants", false, |ui| {
+                match prim.variant_sets() {
+                    Ok(sets) => {
+                        if sets.is_empty() {
+                            ui.label(egui::RichText::new("(none)").color(theme::text_color()));
+                        } else {
+                            for (row_idx, set_name) in sets.iter().enumerate() {
+                                Self::paint_row_bg(ui, row_idx);
+                                ui.horizontal(|ui| {
+                                    ui.label(theme::subdued(set_name));
+                                    Self::show_variant_editor(ui, stage, prim, set_name);
+                                });
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    ui.label(format!("Error: {e}"));
+                    Err(e) => { ui.label(egui::RichText::new(format!("Error: {e}")).color(theme::text_color())); }
                 }
             });
 
-            // Hierarchy section
-            egui::CollapsingHeader::new("Hierarchy")
-                .default_open(false)
-                .show(ui, |ui| {
+            theme::collapsing_section(ui, "Hierarchy", false, |ui| {
                 Self::show_reparent_editor(ui, stage, prim, &path, selected_path, status_message);
             });
 
-            // Material section
-            egui::CollapsingHeader::new("Material")
-                .default_open(false)
-                .show(ui, |ui| match prim.material_binding() {
-                Ok(binding) => {
-                    if binding.is_empty() {
-                        ui.label("(none)");
-                    } else {
-                        ui.label(format!("Bound: {binding}"));
-                        if let Some(stage) = stage {
-                            Self::show_material_params(
-                                ui,
-                                stage,
-                                &binding,
-                                selected_path,
-                                status_message,
-                            );
+            theme::collapsing_section(ui, "Material", false, |ui| {
+                match prim.material_binding() {
+                    Ok(binding) => {
+                        if binding.is_empty() {
+                            ui.label(egui::RichText::new("(none)").color(theme::text_color()));
+                        } else {
+                            ui.label(egui::RichText::new(format!("Bound: {binding}")).color(theme::text_color()));
+                            if let Some(stage) = stage {
+                                Self::show_material_params(ui, stage, &binding, selected_path, status_message);
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    ui.label(format!("(no material binding: {e})"));
+                    Err(e) => { ui.label(egui::RichText::new(format!("(no material binding: {e})")).color(theme::text_color())); }
                 }
             });
         });
@@ -260,7 +185,7 @@ impl PropertiesPanel {
             Self::paint_row_bg(ui, *row_counter);
             *row_counter += 1;
             ui.horizontal(|ui| {
-                ui.label(format!("{prefix} {axis}"));
+                ui.label(egui::RichText::new(format!("{prefix} {axis}")).color(theme::text_color()));
                 let id = ui.make_persistent_id(format!("{prefix}_{index}"));
                 let mut text = ui
                     .data(|d| d.get_temp::<String>(id))
@@ -345,7 +270,7 @@ impl PropertiesPanel {
             .data(|d| d.get_temp::<String>(id))
             .unwrap_or_else(|| parent_path.to_string());
 
-        ui.label("New Parent Path");
+        ui.label(egui::RichText::new("New Parent Path").color(theme::text_color()));
         let response = ui.text_edit_singleline(&mut target_parent);
         if response.changed() {
             ui.data_mut(|d| d.insert_temp(id, target_parent.clone()));
@@ -535,7 +460,7 @@ impl PropertiesPanel {
         *row_counter += 1;
         let mut edited = value;
         ui.horizontal(|ui| {
-            ui.label(label);
+            ui.label(egui::RichText::new(label).color(theme::text_color()));
             let response = ui.add(egui::DragValue::new(&mut edited).speed(0.05).range(range));
             if response.changed() {
                 Self::set_attr_with_undo(stage, prim, &attr_name, &edited.to_string());
@@ -585,7 +510,7 @@ impl PropertiesPanel {
             Self::paint_row_bg(ui, *row_counter);
             *row_counter += 1;
             ui.horizontal(|ui| {
-                ui.label(format!("{label} {axis}"));
+                ui.label(egui::RichText::new(format!("{label} {axis}")).color(theme::text_color()));
                 let response = ui.add(
                     egui::DragValue::new(&mut edited[index])
                         .speed(0.01)

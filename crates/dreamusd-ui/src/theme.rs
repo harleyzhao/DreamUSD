@@ -274,3 +274,58 @@ pub fn chip_frame(fill: Color32) -> Frame {
         .corner_radius(CornerRadius::same(255))
         .inner_margin(Margin::symmetric(8, 3))
 }
+
+/// Collapsing section with a custom bright triangle — replaces egui::CollapsingHeader
+/// whose built-in arrow ignores our theme colors.
+pub fn collapsing_section<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    default_open: bool,
+    add_body: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<R> {
+    let id = ui.make_persistent_id(title);
+    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        id,
+        default_open,
+    );
+    let is_open = state.is_open();
+
+    ui.horizontal(|ui| {
+        let indent = ui.spacing().indent;
+        let icon_h = ui.spacing().icon_width;
+        let (_aid, arrow_rect) = ui.allocate_space(egui::vec2(indent, icon_h));
+        let arrow_resp = ui.interact(arrow_rect, id.with("arr"), egui::Sense::click());
+        if arrow_resp.clicked() {
+            state.toggle(ui);
+        }
+        let col = text_color();
+        let c = arrow_rect.center();
+        let r = (arrow_rect.width().min(arrow_rect.height()) * 0.35).max(4.0);
+        let pts = if is_open {
+            vec![
+                egui::pos2(c.x - r, c.y - r * 0.6),
+                egui::pos2(c.x + r, c.y - r * 0.6),
+                egui::pos2(c.x, c.y + r * 0.7),
+            ]
+        } else {
+            vec![
+                egui::pos2(c.x - r * 0.6, c.y - r),
+                egui::pos2(c.x + r * 0.7, c.y),
+                egui::pos2(c.x - r * 0.6, c.y + r),
+            ]
+        };
+        ui.painter()
+            .add(egui::Shape::convex_polygon(pts, col, egui::Stroke::NONE));
+        ui.label(RichText::new(title).strong().color(text_color()));
+    });
+
+    let result = if is_open {
+        Some(ui.indent(id, add_body).inner)
+    } else {
+        None
+    };
+
+    state.store(ui.ctx());
+    result
+}

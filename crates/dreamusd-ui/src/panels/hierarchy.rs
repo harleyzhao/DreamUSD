@@ -129,31 +129,63 @@ impl HierarchyPanel {
         }
 
         if children.is_empty() {
-            let response = self.show_tree_item(ui, icon, icon_color, &name, is_selected, false);
+            let response = self.show_tree_item(ui, icon, icon_color, &name, is_selected);
             if response.clicked() {
                 self.selected_path = Some(path);
             }
         } else {
             let is_root = path == "/" || name.is_empty();
             let id = ui.make_persistent_id(&path);
-            let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
                 ui.ctx(),
                 id,
                 is_root,
             );
+            let is_open = state.is_open();
             let is_ancestor_of_selected = !is_selected && self.path_contains_selection(&path);
-            state
-            .show_header(ui, |ui| {
-                let response = self.show_tree_item(ui, icon, icon_color, &name, is_selected, is_ancestor_of_selected);
-                if response.clicked() {
-                    self.selected_path = Some(path.clone());
+
+            let item_resp = ui.horizontal(|ui| {
+                let (_aid, arrow_rect) = ui.allocate_space(egui::vec2(
+                    ui.spacing().indent,
+                    ui.spacing().icon_width,
+                ));
+                let arrow_resp = ui.interact(arrow_rect, id.with("arr"), egui::Sense::click());
+                if arrow_resp.clicked() {
+                    state.toggle(ui);
                 }
-            })
-            .body(|ui| {
-                for child in &children {
-                    self.show_prim_tree(ui, child);
-                }
-            });
+                let col = theme::text_color();
+                let c = arrow_rect.center();
+                let r = (arrow_rect.width().min(arrow_rect.height()) * 0.35).max(4.0);
+                let pts = if is_open {
+                    vec![
+                        egui::pos2(c.x - r, c.y - r * 0.6),
+                        egui::pos2(c.x + r, c.y - r * 0.6),
+                        egui::pos2(c.x, c.y + r * 0.7),
+                    ]
+                } else {
+                    vec![
+                        egui::pos2(c.x - r * 0.6, c.y - r),
+                        egui::pos2(c.x + r * 0.7, c.y),
+                        egui::pos2(c.x - r * 0.6, c.y + r),
+                    ]
+                };
+                ui.painter().add(egui::Shape::convex_polygon(pts, col, egui::Stroke::NONE));
+                let _ = is_ancestor_of_selected;
+                self.show_tree_item(ui, icon, icon_color, &name, is_selected)
+            }).inner;
+
+            if item_resp.clicked() {
+                self.selected_path = Some(path.clone());
+            }
+
+            if is_open {
+                ui.indent(id, |ui| {
+                    for child in &children {
+                        self.show_prim_tree(ui, child);
+                    }
+                });
+            }
+            state.store(ui.ctx());
         }
     }
 
@@ -164,18 +196,15 @@ impl HierarchyPanel {
         _icon_color: egui::Color32,
         name: &str,
         is_selected: bool,
-        _is_ancestor_of_selected: bool,
     ) -> egui::Response {
-        let label = if is_selected {
-            egui::RichText::new(format!("{icon}  {name}")).color(egui::Color32::WHITE)
-        } else {
-            egui::RichText::new(format!("{icon}  {name}"))
-        };
+        let label = egui::RichText::new(format!("{icon}  {name}"))
+            .color(theme::text_color());
 
         ui.add(
             egui::Button::new(label)
                 .fill(egui::Color32::TRANSPARENT)
                 .stroke(egui::Stroke::NONE)
+                .min_size(egui::vec2(ui.available_width(), 0.0))
                 .wrap_mode(egui::TextWrapMode::Truncate),
         )
     }
