@@ -20,6 +20,8 @@
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/sdf/changeBlock.h>
 #include <pxr/usd/sdf/copyUtils.h>
+#include <pxr/usd/usdGeom/bboxCache.h>
+#include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/base/tf/token.h>
 
@@ -179,6 +181,46 @@ DuStatus du_prim_get_name(DuPrim* prim, const char** out) {
     DU_CHECK_NULL(out);
     *out = prim->prim.GetName().GetText();
     return DU_OK;
+}
+
+DuStatus du_prim_get_world_bounds(DuPrim* prim, double min_xyz[3], double max_xyz[3]) {
+    DU_CHECK_NULL(prim);
+    DU_CHECK_NULL(min_xyz);
+    DU_CHECK_NULL(max_xyz);
+
+    DU_TRY({
+        if (!prim->prim.IsValid()) {
+            du_set_last_error("Prim is invalid");
+            return DU_ERR_INVALID;
+        }
+
+        TfTokenVector includedPurposes;
+        includedPurposes.push_back(UsdGeomTokens->default_);
+        includedPurposes.push_back(UsdGeomTokens->render);
+        includedPurposes.push_back(UsdGeomTokens->proxy);
+        includedPurposes.push_back(UsdGeomTokens->guide);
+        UsdGeomBBoxCache bboxCache(
+            UsdTimeCode::Default(),
+            includedPurposes,
+            /*useExtentsHint=*/true,
+            /*ignoreVisibility=*/false
+        );
+        const GfRange3d bounds = bboxCache.ComputeWorldBound(prim->prim).ComputeAlignedBox();
+        if (bounds.IsEmpty()) {
+            du_set_last_error("Prim has empty world bounds");
+            return DU_ERR_INVALID;
+        }
+
+        const GfVec3d min = bounds.GetMin();
+        const GfVec3d max = bounds.GetMax();
+        for (int i = 0; i < 3; ++i) {
+            min_xyz[i] = min[i];
+            max_xyz[i] = max[i];
+        }
+        return DU_OK;
+    });
+
+    return DU_ERR_USD;
 }
 
 // --- Attributes ---

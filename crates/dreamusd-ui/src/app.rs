@@ -39,10 +39,6 @@ fn usdview_selection_yellow() -> egui::Color32 {
     egui::Color32::from_rgb(255, 255, 0)
 }
 
-fn usdview_selection_yellow_fill() -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(255, 255, 0, 96)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AntiAliasMode {
     Off,
@@ -176,6 +172,9 @@ pub struct DreamUsdApp {
     stage: Option<Stage>,
     hydra: Option<HydraEngine>,
     hierarchy: HierarchyPanel,
+    properties: PropertiesPanel,
+    hierarchy_panel_open: bool,
+    properties_panel_open: bool,
     camera: ViewportCamera,
     current_display_mode: usize,
     current_complexity: usize,
@@ -204,8 +203,14 @@ pub struct DreamUsdApp {
     hydra_error: Option<String>,
     // Gizmo interaction state
     dragging_handle: Option<GizmoHandle>,
+    marquee_start: Option<egui::Pos2>,
+    marquee_current: Option<egui::Pos2>,
     drag_start_pos: Option<Vec3>,
     drag_start_values: Option<[f64; 3]>,
+    drag_start_selection_positions: Vec<(String, Vec3)>,
+    drag_start_selection_values: Vec<(String, [f64; 3])>,
+    drag_start_selection_local_rotations: Vec<(String, Quat)>,
+    drag_start_selection_world_rotations: Vec<(String, Quat)>,
     drag_start_local_rotation: Option<Quat>,
     drag_start_world_rotation: Option<Quat>,
     drag_start_pointer: Option<egui::Pos2>,
@@ -237,6 +242,9 @@ impl Default for DreamUsdApp {
             stage: None,
             hydra: None,
             hierarchy: HierarchyPanel::new(),
+            properties: PropertiesPanel::new(),
+            hierarchy_panel_open: true,
+            properties_panel_open: true,
             camera: ViewportCamera::default(),
             current_display_mode: 0,
             current_complexity: 0,
@@ -264,8 +272,14 @@ impl Default for DreamUsdApp {
             retired_native_textures: Vec::new(),
             hydra_error: None,
             dragging_handle: None,
+            marquee_start: None,
+            marquee_current: None,
             drag_start_pos: None,
             drag_start_values: None,
+            drag_start_selection_positions: Vec::new(),
+            drag_start_selection_values: Vec::new(),
+            drag_start_selection_local_rotations: Vec::new(),
+            drag_start_selection_world_rotations: Vec::new(),
             drag_start_local_rotation: None,
             drag_start_world_rotation: None,
             drag_start_pointer: None,
@@ -315,6 +329,12 @@ enum RendererSettingUpdate {
     String(String, String),
 }
 
+#[derive(Clone, Copy)]
+enum SidebarArrowDirection {
+    Left,
+    Right,
+}
+
 fn light_kind(type_name: &str, name: &str) -> Option<LightKind> {
     match type_name {
         "DistantLight" => Some(LightKind::Directional),
@@ -327,6 +347,42 @@ fn light_kind(type_name: &str, name: &str) -> Option<LightKind> {
             _ => None,
         },
     }
+}
+
+fn sidebar_arrow_button(ui: &mut egui::Ui, direction: SidebarArrowDirection) -> egui::Response {
+    let size = egui::vec2(18.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let visuals = ui.style().interact(&response);
+    ui.painter().rect(
+        rect,
+        4.0,
+        visuals.bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Outside,
+    );
+
+    let center = rect.center();
+    let w = 4.0;
+    let h = 5.0;
+    let points = match direction {
+        SidebarArrowDirection::Left => vec![
+            egui::pos2(center.x + w * 0.5, center.y - h),
+            egui::pos2(center.x - w * 0.5, center.y),
+            egui::pos2(center.x + w * 0.5, center.y + h),
+        ],
+        SidebarArrowDirection::Right => vec![
+            egui::pos2(center.x - w * 0.5, center.y - h),
+            egui::pos2(center.x + w * 0.5, center.y),
+            egui::pos2(center.x - w * 0.5, center.y + h),
+        ],
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        visuals.fg_stroke.color,
+        egui::Stroke::NONE,
+    ));
+
+    response
 }
 
 impl DreamUsdApp {
@@ -1203,6 +1259,271 @@ impl DreamUsdApp {
         selection::prim_position(prim)
     }
 
+    fn apply_viewport_click_selection(
+        &mut self,
+        picked_path: Option<String>,
+        modifiers: egui::Modifiers,
+    ) -> bool {
+        let before = self.hierarchy.selected_paths_snapshot();
+        match picked_path {
+            Some(path) => {
+                if modifiers.command {
+                    self.hierarchy.toggle_selection_public(&path);
+                } else if modifiers.shift {
+                    self.hierarchy.add_to_selection_public(&path);
+                } else {
+                    self.hierarchy.set_single_selection(path);
+                }
+            }
+            None => {
+                if !modifiers.command && !modifiers.shift {
+                    self.hierarchy.clear_selection();
+                }
+            }
+        }
+        self.hierarchy.selected_paths_snapshot() != before
+    }
+
+    fn apply_viewport_marquee_selection(
+        &mut self,
+        mut paths: Vec<String>,
+        modifiers: egui::Modifiers,
+    ) -> bool {
+        let before = self.hierarchy.selected_paths_snapshot();
+        paths.sort();
+        paths.dedup();
+
+        if paths.is_empty() {
+            if !modifiers.command && !modifiers.shift {
+                self.hierarchy.clear_selection();
+            }
+            return self.hierarchy.selected_paths_snapshot() != before;
+        }
+
+        if modifiers.command || modifiers.shift {
+            let mut merged = self.hierarchy.selected_paths_snapshot();
+            merged.extend(paths);
+            self.hierarchy.replace_selection(merged);
+        } else {
+            self.hierarchy.replace_selection(paths);
+        }
+        self.hierarchy.selected_paths_snapshot() != before
+    }
+
+    fn queue_viewport_selection_refresh(&mut self, ctx: &egui::Context) {
+        self.viewport_interaction_frames = self.viewport_interaction_frames.max(2);
+        ctx.request_repaint();
+    }
+
+    fn current_marquee_rect(&self) -> Option<egui::Rect> {
+        let start = self.marquee_start?;
+        let current = self.marquee_current?;
+        Some(egui::Rect::from_two_pos(start, current))
+    }
+
+    fn collect_paths_in_marquee(&self, viewport_rect: egui::Rect, marquee_rect: egui::Rect) -> Vec<String> {
+        let Some(stage) = self.stage.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(root) = stage.root_prim() else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+        self.collect_paths_in_subtree(&root, viewport_rect, marquee_rect, &mut result);
+        result.sort();
+        result.dedup();
+        result
+    }
+
+    fn collect_paths_in_subtree(
+        &self,
+        prim: &Prim,
+        viewport_rect: egui::Rect,
+        marquee_rect: egui::Rect,
+        result: &mut Vec<String>,
+    ) {
+        if self.matches_pick_filter(prim) {
+            if let (Ok(path), Some(world_pos)) = (prim.path(), self.get_prim_position(prim)) {
+                if path != "/" {
+                    if let Some(screen_pos) = self.hydra_project(world_pos, viewport_rect) {
+                        if marquee_rect.contains(screen_pos) {
+                            result.push(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Ok(children) = prim.children() {
+            for child in children {
+                self.collect_paths_in_subtree(&child, viewport_rect, marquee_rect, result);
+            }
+        }
+    }
+
+    fn current_transform_selection_positions(&self) -> Vec<(String, Vec3)> {
+        let Some(stage) = self.stage.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+        for path in self.hierarchy.selected_paths_snapshot() {
+            let resolved = self.resolve_gizmo_target_path(&path);
+            if result.iter().any(|(existing, _)| existing == &resolved) {
+                continue;
+            }
+            let Some(prim) = find_prim_recursive(stage, &resolved) else {
+                continue;
+            };
+            let Some(world_pos) = self.get_prim_position(&prim) else {
+                continue;
+            };
+            result.push((resolved, world_pos));
+        }
+        result
+    }
+
+    fn apply_multi_translate_world_positions(&self, delta: Vec3) {
+        let Some(stage) = self.stage.as_ref() else {
+            return;
+        };
+
+        for (path, start_pos) in &self.drag_start_selection_positions {
+            let Some(prim) = find_prim_recursive(stage, path) else {
+                continue;
+            };
+            let new_pos = *start_pos + delta;
+            let _ = prim.set_translate_world(
+                new_pos.x as f64,
+                new_pos.y as f64,
+                new_pos.z as f64,
+            );
+        }
+    }
+
+    fn apply_multi_local_translate(&self, update: impl Fn([f64; 3]) -> [f64; 3]) {
+        let Some(stage) = self.stage.as_ref() else {
+            return;
+        };
+
+        for (path, start) in &self.drag_start_selection_values {
+            let Some(prim) = find_prim_recursive(stage, path) else {
+                continue;
+            };
+            let next = update(*start);
+            let _ = prim.set_translate(next[0], next[1], next[2]);
+        }
+    }
+
+    fn current_transform_selection_vec3_values(
+        &self,
+        getter: fn(&Prim) -> Result<[f64; 3], dreamusd_core::DuError>,
+    ) -> Vec<(String, [f64; 3])> {
+        let Some(stage) = self.stage.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+        for path in self.hierarchy.selected_paths_snapshot() {
+            let resolved = self.resolve_gizmo_target_path(&path);
+            if result.iter().any(|(existing, _)| existing == &resolved) {
+                continue;
+            }
+            let Some(prim) = find_prim_recursive(stage, &resolved) else {
+                continue;
+            };
+            let Ok(value) = getter(&prim) else {
+                continue;
+            };
+            result.push((resolved, value));
+        }
+        result
+    }
+
+    fn current_transform_selection_rotations(&self) -> (Vec<(String, Quat)>, Vec<(String, Quat)>) {
+        let Some(stage) = self.stage.as_ref() else {
+            return (Vec::new(), Vec::new());
+        };
+
+        let mut locals = Vec::new();
+        let mut worlds = Vec::new();
+        for path in self.hierarchy.selected_paths_snapshot() {
+            let resolved = self.resolve_gizmo_target_path(&path);
+            if locals.iter().any(|(existing, _)| existing == &resolved) {
+                continue;
+            }
+            let Some(prim) = find_prim_recursive(stage, &resolved) else {
+                continue;
+            };
+            let Some(local) = prim
+                .get_local_matrix()
+                .ok()
+                .and_then(Self::quat_from_matrix)
+            else {
+                continue;
+            };
+            let Some(world) = prim
+                .get_world_matrix()
+                .ok()
+                .and_then(Self::quat_from_matrix)
+            else {
+                continue;
+            };
+            locals.push((resolved.clone(), local));
+            worlds.push((resolved, world));
+        }
+        (locals, worlds)
+    }
+
+    fn apply_multi_axis_rotation(&self, axis: usize, angle_deg: f32) {
+        let Some(stage) = self.stage.as_ref() else {
+            return;
+        };
+
+        for (path, local_start) in &self.drag_start_selection_local_rotations {
+            let Some(prim) = find_prim_recursive(stage, path) else {
+                continue;
+            };
+            let world_start = self
+                .drag_start_selection_world_rotations
+                .iter()
+                .find_map(|(world_path, quat)| (world_path == path).then_some(*quat));
+            self.apply_axis_rotation_with_start(&prim, axis, angle_deg, Some(*local_start), world_start);
+        }
+    }
+
+    fn apply_multi_view_rotation(&self, angle_deg: f32) {
+        let Some(stage) = self.stage.as_ref() else {
+            return;
+        };
+
+        for (path, local_start) in &self.drag_start_selection_local_rotations {
+            let Some(prim) = find_prim_recursive(stage, path) else {
+                continue;
+            };
+            let world_start = self
+                .drag_start_selection_world_rotations
+                .iter()
+                .find_map(|(world_path, quat)| (world_path == path).then_some(*quat));
+            self.apply_view_rotation_with_start(&prim, angle_deg, Some(*local_start), world_start);
+        }
+    }
+
+    fn apply_multi_scale(&self, update: impl Fn([f64; 3]) -> [f64; 3]) {
+        let Some(stage) = self.stage.as_ref() else {
+            return;
+        };
+
+        for (path, start) in &self.drag_start_selection_values {
+            let Some(prim) = find_prim_recursive(stage, path) else {
+                continue;
+            };
+            let next = update(*start);
+            let _ = prim.set_scale(next[0], next[1], next[2]);
+        }
+    }
+
     fn local_gizmo_axes(&self, prim: &Prim) -> [Vec3; 3] {
         let fallback = [Vec3::X, Vec3::Y, Vec3::Z];
         let Ok(matrix) = prim.get_world_matrix() else {
@@ -1375,8 +1696,24 @@ impl DreamUsdApp {
     }
 
     fn apply_axis_rotation(&self, prim: &Prim, axis: usize, angle_deg: f32) {
-        let Some(local_start) = self
-            .drag_start_local_rotation
+        self.apply_axis_rotation_with_start(
+            prim,
+            axis,
+            angle_deg,
+            self.drag_start_local_rotation,
+            self.drag_start_world_rotation,
+        );
+    }
+
+    fn apply_axis_rotation_with_start(
+        &self,
+        prim: &Prim,
+        axis: usize,
+        angle_deg: f32,
+        local_start: Option<Quat>,
+        world_start: Option<Quat>,
+    ) {
+        let Some(local_start) = local_start
             .or_else(|| prim.get_local_matrix().ok().and_then(Self::quat_from_matrix))
         else {
             return;
@@ -1389,9 +1726,8 @@ impl DreamUsdApp {
                 (local_start * local_delta).normalize()
             }
             GizmoSpace::World => {
-                let Some(world_start) = self
-                    .drag_start_world_rotation
-                    .or_else(|| prim.get_world_matrix().ok().and_then(Self::quat_from_matrix))
+                let Some(world_start) =
+                    world_start.or_else(|| prim.get_world_matrix().ok().and_then(Self::quat_from_matrix))
                 else {
                     return;
                 };
@@ -1406,15 +1742,28 @@ impl DreamUsdApp {
     }
 
     fn apply_view_rotation(&self, prim: &Prim, angle_deg: f32) {
-        let Some(local_start) = self
-            .drag_start_local_rotation
+        self.apply_view_rotation_with_start(
+            prim,
+            angle_deg,
+            self.drag_start_local_rotation,
+            self.drag_start_world_rotation,
+        );
+    }
+
+    fn apply_view_rotation_with_start(
+        &self,
+        prim: &Prim,
+        angle_deg: f32,
+        local_start: Option<Quat>,
+        world_start: Option<Quat>,
+    ) {
+        let Some(local_start) = local_start
             .or_else(|| prim.get_local_matrix().ok().and_then(Self::quat_from_matrix))
         else {
             return;
         };
-        let Some(world_start) = self
-            .drag_start_world_rotation
-            .or_else(|| prim.get_world_matrix().ok().and_then(Self::quat_from_matrix))
+        let Some(world_start) =
+            world_start.or_else(|| prim.get_world_matrix().ok().and_then(Self::quat_from_matrix))
         else {
             return;
         };
@@ -1733,68 +2082,6 @@ impl DreamUsdApp {
                 );
             }
         }
-    }
-
-    fn draw_selection_marker(
-        &self,
-        ui: &egui::Ui,
-        rect: egui::Rect,
-        prim: &Prim,
-    ) {
-        let Some(world_pos) = self.get_prim_position(prim) else {
-            return;
-        };
-        let Some(center) = self.hydra_project(world_pos, rect) else {
-            return;
-        };
-
-        let name = prim.name().unwrap_or_else(|_| "Selected".to_string());
-        let painter = ui.painter();
-        let outer = usdview_selection_yellow();
-        let inner = usdview_selection_yellow_fill();
-        let shadow = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120);
-
-        painter.circle_filled(center, 14.0, inner);
-        painter.circle_stroke(center, 14.0, egui::Stroke::new(2.5, outer));
-        painter.circle_stroke(center, 7.0, egui::Stroke::new(1.5, outer));
-        painter.line_segment(
-            [center + egui::vec2(-18.0, 0.0), center + egui::vec2(-8.0, 0.0)],
-            egui::Stroke::new(2.0, outer),
-        );
-        painter.line_segment(
-            [center + egui::vec2(8.0, 0.0), center + egui::vec2(18.0, 0.0)],
-            egui::Stroke::new(2.0, outer),
-        );
-        painter.line_segment(
-            [center + egui::vec2(0.0, -18.0), center + egui::vec2(0.0, -8.0)],
-            egui::Stroke::new(2.0, outer),
-        );
-        painter.line_segment(
-            [center + egui::vec2(0.0, 8.0), center + egui::vec2(0.0, 18.0)],
-            egui::Stroke::new(2.0, outer),
-        );
-
-        let text_pos = center + egui::vec2(0.0, -28.0);
-        let galley = painter.layout_no_wrap(
-            name,
-            egui::FontId::proportional(12.0),
-            egui::Color32::WHITE,
-        );
-        let label_rect = egui::Rect::from_center_size(
-            text_pos,
-            galley.size() + egui::vec2(14.0, 8.0),
-        );
-        painter.rect_filled(label_rect.translate(egui::vec2(0.0, 1.0)), 6.0, shadow);
-        painter.rect_filled(
-            label_rect,
-            6.0,
-            egui::Color32::from_rgba_unmultiplied(32, 32, 36, 220),
-        );
-        painter.galley(
-            label_rect.center() - galley.size() * 0.5,
-            galley,
-            egui::Color32::WHITE,
-        );
     }
 
     fn draw_rotate_gizmo(
@@ -2135,10 +2422,38 @@ impl DreamUsdApp {
                 self.drag_start_pos = Some(prim_pos);
                 self.drag_start_values = match self.gizmo_mode {
                     GizmoMode::Select => None,
-                    GizmoMode::Translate => None,
+                    GizmoMode::Translate => {
+                        if self.effective_gizmo_space() == GizmoSpace::Local {
+                            prim.get_translate().ok()
+                        } else {
+                            None
+                        }
+                    }
                     GizmoMode::Rotate => prim.get_rotate().ok(),
                     GizmoMode::Scale => prim.get_scale().ok(),
                 };
+                self.drag_start_selection_positions = if self.gizmo_mode == GizmoMode::Translate {
+                    self.current_transform_selection_positions()
+                } else {
+                    Vec::new()
+                };
+                self.drag_start_selection_values = match self.gizmo_mode {
+                    GizmoMode::Translate if self.effective_gizmo_space() == GizmoSpace::Local => {
+                        self.current_transform_selection_vec3_values(Prim::get_translate)
+                    }
+                    GizmoMode::Scale => {
+                        self.current_transform_selection_vec3_values(Prim::get_scale)
+                    }
+                    _ => Vec::new(),
+                };
+                let (selection_local_rotations, selection_world_rotations) =
+                    if self.gizmo_mode == GizmoMode::Rotate {
+                        self.current_transform_selection_rotations()
+                    } else {
+                        (Vec::new(), Vec::new())
+                    };
+                self.drag_start_selection_local_rotations = selection_local_rotations;
+                self.drag_start_selection_world_rotations = selection_world_rotations;
                 self.drag_start_local_rotation = prim
                     .get_local_matrix()
                     .ok()
@@ -2188,13 +2503,34 @@ impl DreamUsdApp {
                                     if snap {
                                         drag_amount = Self::snap_translate_amount(drag_amount);
                                     }
-                                    let start_pos = self.drag_start_pos.unwrap_or(reference_pos);
-                                    let new_pos = start_pos + axis_dir * drag_amount;
-                                    let _ = prim.set_translate_world(
-                                        new_pos.x as f64,
-                                        new_pos.y as f64,
-                                        new_pos.z as f64,
-                                    );
+                                    if self.effective_gizmo_space() == GizmoSpace::Local {
+                                        let start = self.drag_start_values.unwrap_or_else(|| {
+                                            prim.get_translate().unwrap_or([0.0, 0.0, 0.0])
+                                        });
+                                        let mut next = start;
+                                        next[axis] = start[axis] + drag_amount as f64;
+                                        if self.drag_start_selection_values.len() > 1 {
+                                            self.apply_multi_local_translate(|mut current| {
+                                                current[axis] += drag_amount as f64;
+                                                current
+                                            });
+                                        } else {
+                                            let _ = prim.set_translate(next[0], next[1], next[2]);
+                                        }
+                                    } else {
+                                        let start_pos = self.drag_start_pos.unwrap_or(reference_pos);
+                                        let new_pos = start_pos + axis_dir * drag_amount;
+                                        let delta = new_pos - start_pos;
+                                        if self.drag_start_selection_positions.len() > 1 {
+                                            self.apply_multi_translate_world_positions(delta);
+                                        } else {
+                                            let _ = prim.set_translate_world(
+                                                new_pos.x as f64,
+                                                new_pos.y as f64,
+                                                new_pos.z as f64,
+                                            );
+                                        }
+                                    }
                                 }
                                 GizmoMode::Rotate => {
                                     if let (Some(start_pointer), Some(current_pointer), Some(center)) = (
@@ -2223,7 +2559,11 @@ impl DreamUsdApp {
                                                     Self::snap_rotation_degrees(drag_amount_deg as f64)
                                                         as f32;
                                             }
-                                            self.apply_axis_rotation(prim, axis, drag_amount_deg);
+                                            if self.drag_start_selection_local_rotations.len() > 1 {
+                                                self.apply_multi_axis_rotation(axis, drag_amount_deg);
+                                            } else {
+                                                self.apply_axis_rotation(prim, axis, drag_amount_deg);
+                                            }
                                         }
                                     }
                                 }
@@ -2238,7 +2578,14 @@ impl DreamUsdApp {
                                         factor = Self::snap_scale_factor(factor);
                                     }
                                     next[axis] = (start[axis] * factor).max(0.001);
-                                    let _ = prim.set_scale(next[0], next[1], next[2]);
+                                    if self.drag_start_selection_values.len() > 1 {
+                                        self.apply_multi_scale(|mut current| {
+                                            current[axis] = (current[axis] * factor).max(0.001);
+                                            current
+                                        });
+                                    } else {
+                                        let _ = prim.set_scale(next[0], next[1], next[2]);
+                                    }
                                 }
                             }
                         }
@@ -2266,14 +2613,39 @@ impl DreamUsdApp {
                                             u = Self::snap_translate_amount(u);
                                             v = Self::snap_translate_amount(v);
                                         }
-                                        let start_pos = self.drag_start_pos.unwrap_or(reference_pos);
-                                        let new_pos =
-                                            start_pos + axis_dirs[axis_a] * u + axis_dirs[axis_b] * v;
-                                        let _ = prim.set_translate_world(
-                                            new_pos.x as f64,
-                                            new_pos.y as f64,
-                                            new_pos.z as f64,
-                                        );
+                                        if self.effective_gizmo_space() == GizmoSpace::Local {
+                                            let start = self.drag_start_values.unwrap_or_else(|| {
+                                                prim.get_translate().unwrap_or([0.0, 0.0, 0.0])
+                                            });
+                                            let mut next = start;
+                                            next[axis_a] = start[axis_a] + u as f64;
+                                            next[axis_b] = start[axis_b] + v as f64;
+                                            if self.drag_start_selection_values.len() > 1 {
+                                                self.apply_multi_local_translate(|mut current| {
+                                                    current[axis_a] += u as f64;
+                                                    current[axis_b] += v as f64;
+                                                    current
+                                                });
+                                            } else {
+                                                let _ =
+                                                    prim.set_translate(next[0], next[1], next[2]);
+                                            }
+                                        } else {
+                                            let start_pos = self.drag_start_pos.unwrap_or(reference_pos);
+                                            let new_pos = start_pos
+                                                + axis_dirs[axis_a] * u
+                                                + axis_dirs[axis_b] * v;
+                                            let delta = new_pos - start_pos;
+                                            if self.drag_start_selection_positions.len() > 1 {
+                                                self.apply_multi_translate_world_positions(delta);
+                                            } else {
+                                                let _ = prim.set_translate_world(
+                                                    new_pos.x as f64,
+                                                    new_pos.y as f64,
+                                                    new_pos.z as f64,
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                                 GizmoMode::Scale => {
@@ -2293,7 +2665,17 @@ impl DreamUsdApp {
                                         let mut next = start;
                                         next[axis_a] = (start[axis_a] * factor).max(0.001);
                                         next[axis_b] = (start[axis_b] * factor).max(0.001);
-                                        let _ = prim.set_scale(next[0], next[1], next[2]);
+                                        if self.drag_start_selection_values.len() > 1 {
+                                            self.apply_multi_scale(|mut current| {
+                                                current[axis_a] =
+                                                    (current[axis_a] * factor).max(0.001);
+                                                current[axis_b] =
+                                                    (current[axis_b] * factor).max(0.001);
+                                                current
+                                            });
+                                        } else {
+                                            let _ = prim.set_scale(next[0], next[1], next[2]);
+                                        }
                                     }
                                 }
                                 GizmoMode::Select | GizmoMode::Rotate => {}
@@ -2321,11 +2703,16 @@ impl DreamUsdApp {
                                 move_world.z = Self::snap_translate_amount(move_world.z);
                             }
                             let new_pos = start_pos + move_world;
-                            let _ = prim.set_translate_world(
-                                new_pos.x as f64,
-                                new_pos.y as f64,
-                                new_pos.z as f64,
-                            );
+                            let delta = new_pos - start_pos;
+                            if self.drag_start_selection_positions.len() > 1 {
+                                self.apply_multi_translate_world_positions(delta);
+                            } else {
+                                let _ = prim.set_translate_world(
+                                    new_pos.x as f64,
+                                    new_pos.y as f64,
+                                    new_pos.z as f64,
+                                );
+                            }
                         }
                         GizmoMode::Scale => {
                             let start = self.drag_start_values.unwrap_or_else(|| {
@@ -2336,11 +2723,21 @@ impl DreamUsdApp {
                             if snap {
                                 factor = Self::snap_scale_factor(factor);
                             }
-                            let _ = prim.set_scale(
-                                (start[0] * factor).max(0.001),
-                                (start[1] * factor).max(0.001),
-                                (start[2] * factor).max(0.001),
-                            );
+                            if self.drag_start_selection_values.len() > 1 {
+                                self.apply_multi_scale(|current| {
+                                    [
+                                        (current[0] * factor).max(0.001),
+                                        (current[1] * factor).max(0.001),
+                                        (current[2] * factor).max(0.001),
+                                    ]
+                                });
+                            } else {
+                                let _ = prim.set_scale(
+                                    (start[0] * factor).max(0.001),
+                                    (start[1] * factor).max(0.001),
+                                    (start[2] * factor).max(0.001),
+                                );
+                            }
                         }
                         GizmoMode::Rotate => {}
                     },
@@ -2369,7 +2766,11 @@ impl DreamUsdApp {
                                             Self::snap_rotation_degrees(drag_amount_deg as f64)
                                                 as f32;
                                     }
-                                    self.apply_view_rotation(prim, drag_amount_deg);
+                                    if self.drag_start_selection_local_rotations.len() > 1 {
+                                        self.apply_multi_view_rotation(drag_amount_deg);
+                                    } else {
+                                        self.apply_view_rotation(prim, drag_amount_deg);
+                                    }
                                 }
                             }
                         }
@@ -2388,6 +2789,10 @@ impl DreamUsdApp {
             self.dragging_handle = None;
             self.drag_start_pos = None;
             self.drag_start_values = None;
+            self.drag_start_selection_positions.clear();
+            self.drag_start_selection_values.clear();
+            self.drag_start_selection_local_rotations.clear();
+            self.drag_start_selection_world_rotations.clear();
             self.drag_start_local_rotation = None;
             self.drag_start_world_rotation = None;
             self.drag_start_pointer = None;
@@ -2497,53 +2902,109 @@ impl eframe::App for DreamUsdApp {
         });
 
         // Scene hierarchy (left)
-        egui::SidePanel::left("scene_hierarchy")
-            .default_width(220.0)
-            .frame(crate::theme::sidebar_frame())
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(crate::theme::panel_title("HIERARCHY"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Focus").clicked() {
-                            self.focus_selected_prim();
-                        }
-                        if ui.small_button("Delete").clicked() {
-                            self.delete_selected_prim();
+        if self.hierarchy_panel_open {
+            egui::SidePanel::left("scene_hierarchy")
+                .default_width(220.0)
+                .frame(crate::theme::sidebar_frame())
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(crate::theme::panel_title("HIERARCHY"));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if sidebar_arrow_button(ui, SidebarArrowDirection::Left).clicked() {
+                                self.hierarchy_panel_open = false;
+                            }
+                            if ui.small_button("Focus").clicked() {
+                                self.focus_selected_prim();
+                            }
+                            if ui.small_button("Delete").clicked() {
+                                self.delete_selected_prim();
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    self.hierarchy
+                        .show(ui, self.stage.as_ref(), &mut self.status_message);
+                });
+        } else {
+            egui::SidePanel::left("scene_hierarchy_collapsed")
+                .exact_width(20.0)
+                .frame(crate::theme::sidebar_frame())
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        if sidebar_arrow_button(ui, SidebarArrowDirection::Right).clicked() {
+                            self.hierarchy_panel_open = true;
                         }
                     });
                 });
-                ui.add_space(4.0);
-                self.hierarchy.show(ui, self.stage.as_ref());
-            });
+        }
 
         // Properties (right)
+        let current_selection = self.hierarchy.selected_path.clone();
+        let selected_paths = self.hierarchy.selected_paths_snapshot();
+        let mut selected_transform_paths = Vec::new();
+        for path in &selected_paths {
+            let resolved = self.resolve_gizmo_target_path(path);
+            if !selected_transform_paths.iter().any(|existing| existing == &resolved) {
+                selected_transform_paths.push(resolved);
+            }
+        }
+        let inspected_path = self
+            .properties
+            .begin_frame(self.stage.as_ref(), current_selection.as_deref());
         let selected_prim: Option<Prim> = (|| {
             let stage = self.stage.as_ref()?;
-            let sel_path = self.hierarchy.selected_path.as_deref()?;
+            let sel_path = inspected_path.as_deref()?;
             find_prim_recursive(stage, sel_path)
         })();
         let transform_target_prim: Option<Prim> = (|| {
             let stage = self.stage.as_ref()?;
-            let sel_path = self.hierarchy.selected_path.as_deref()?;
-            let target_path = self.resolve_transform_target_path(sel_path)?;
+            let sel_path = inspected_path.as_deref()?;
+            let target_path = self.resolve_gizmo_target_path(sel_path);
             find_prim_recursive(stage, &target_path)
         })();
 
-        egui::SidePanel::right("properties")
-            .default_width(260.0)
-            .frame(crate::theme::sidebar_frame())
-            .show(ctx, |ui| {
-                ui.label(crate::theme::panel_title("PROPERTIES"));
-                ui.add_space(4.0);
-                PropertiesPanel::show(
-                    ui,
-                    self.stage.as_ref(),
-                    selected_prim.as_ref(),
-                    transform_target_prim.as_ref(),
-                    &mut self.hierarchy.selected_path,
-                    &mut self.status_message,
-                );
-            });
+        if self.properties_panel_open {
+            egui::SidePanel::right("properties")
+                .default_width(260.0)
+                .frame(crate::theme::sidebar_frame())
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(crate::theme::panel_title("PROPERTIES"));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if sidebar_arrow_button(ui, SidebarArrowDirection::Right).clicked() {
+                                self.properties_panel_open = false;
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    self.properties.show(
+                        ui,
+                        self.stage.as_ref(),
+                        current_selection.as_deref(),
+                        &selected_paths,
+                        &selected_transform_paths,
+                        inspected_path.as_deref(),
+                        selected_prim.as_ref(),
+                        transform_target_prim.as_ref(),
+                        &mut self.hierarchy.selected_path,
+                        &mut self.status_message,
+                    );
+                    self.hierarchy.sync_selection_model();
+                });
+        } else {
+            egui::SidePanel::right("properties_collapsed")
+                .exact_width(20.0)
+                .frame(crate::theme::sidebar_frame())
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        if sidebar_arrow_button(ui, SidebarArrowDirection::Left).clicked() {
+                            self.properties_panel_open = true;
+                        }
+                    });
+                });
+        }
 
         self.show_camera_settings_window(ctx);
         self.show_renderer_settings_window(ctx);
@@ -2736,12 +3197,47 @@ impl eframe::App for DreamUsdApp {
             // Handle gizmo drag interaction
             self.handle_gizmo_drag(&response, &transform_target_prim, rect, hovered_handle);
 
-            if response.clicked_by(egui::PointerButton::Primary)
-                && self.dragging_handle.is_none()
-                && display_hovered_handle.is_none()
+            let selection_modifiers = ui.input(|input| input.modifiers);
+            let allow_viewport_selection =
+                self.dragging_handle.is_none() && display_hovered_handle.is_none();
+
+            if allow_viewport_selection && response.drag_started_by(egui::PointerButton::Primary) {
+                if let Some(pointer_pos) = response.interact_pointer_pos() {
+                    self.marquee_start = Some(pointer_pos);
+                    self.marquee_current = Some(pointer_pos);
+                }
+            }
+
+            if allow_viewport_selection
+                && response.dragged_by(egui::PointerButton::Primary)
+                && self.marquee_start.is_some()
             {
                 if let Some(pointer_pos) = response.interact_pointer_pos() {
-                    self.hierarchy.selected_path = self.pick_prim_in_viewport(rect, pointer_pos);
+                    self.marquee_current = Some(pointer_pos);
+                }
+            }
+
+            if allow_viewport_selection && response.drag_stopped_by(egui::PointerButton::Primary) {
+                if let Some(selection_rect) = self.current_marquee_rect() {
+                    let dragged_far_enough =
+                        selection_rect.width() >= 8.0 || selection_rect.height() >= 8.0;
+                    if dragged_far_enough {
+                        let paths = self.collect_paths_in_marquee(rect, selection_rect);
+                        if self.apply_viewport_marquee_selection(paths, selection_modifiers) {
+                            self.queue_viewport_selection_refresh(ctx);
+                        }
+                    }
+                }
+                self.marquee_start = None;
+                self.marquee_current = None;
+            }
+
+            if response.clicked_by(egui::PointerButton::Primary) && allow_viewport_selection {
+                if let Some(pointer_pos) = response.interact_pointer_pos() {
+                    let path = self.pick_prim_in_viewport(rect, pointer_pos);
+                    if self.apply_viewport_click_selection(path, selection_modifiers) {
+                        self.queue_viewport_selection_refresh(ctx);
+                    }
                 }
             }
 
@@ -2786,10 +3282,22 @@ impl eframe::App for DreamUsdApp {
             let sel_path = self.hierarchy.selected_path.as_deref();
             self.draw_light_icons(ui, rect, sel_path);
 
+            if let Some(selection_rect) = self.current_marquee_rect() {
+                let painter = ui.painter();
+                painter.rect_filled(
+                    selection_rect,
+                    2.0,
+                    egui::Color32::from_rgba_unmultiplied(86, 156, 238, 32),
+                );
+                painter.rect_stroke(
+                    selection_rect,
+                    2.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(86, 156, 238)),
+                    egui::StrokeKind::Outside,
+                );
+            }
+
             if let Some(ref prim) = transform_target_prim {
-                if self.gizmo_mode != GizmoMode::Select {
-                    self.draw_selection_marker(ui, rect, prim);
-                }
                 self.draw_drag_overlay(ui, rect, prim);
                 if let Some(pos) = self.get_prim_position(prim) {
                     let axis_dirs = self.gizmo_axes(prim);

@@ -149,6 +149,20 @@ impl Prim {
         Ok(xyz)
     }
 
+    /// Get the world-space aligned bounds for this prim.
+    pub fn get_world_bounds(&self) -> Result<([f64; 3], [f64; 3]), DuError> {
+        let mut min_xyz = [0.0f64; 3];
+        let mut max_xyz = [0.0f64; 3];
+        unsafe {
+            check(du_prim_get_world_bounds(
+                self.raw,
+                min_xyz.as_mut_ptr(),
+                max_xyz.as_mut_ptr(),
+            ))?;
+        }
+        Ok((min_xyz, max_xyz))
+    }
+
     /// Set the translation of this prim.
     pub fn set_translate(&self, x: f64, y: f64, z: f64) -> Result<(), DuError> {
         unsafe { check(du_xform_set_translate(self.raw, x, y, z)) }

@@ -299,14 +299,28 @@ impl HydraEngine {
 
     /// Update the currently highlighted prim in Hydra.
     pub fn set_selection(&self, selected_path: Option<&str>) -> Result<(), DuError> {
-        let selected_path = selected_path
-            .map(CString::new)
-            .transpose()
-            .map_err(|_| DuError::Invalid("Selection path contains an interior NUL byte".into()))?;
-        let ptr = selected_path
-            .as_ref()
-            .map_or(ptr::null(), |path| path.as_ptr());
-        unsafe { check(dreamusd_sys::du_hydra_set_selection(self.raw, ptr)) }
+        let selection = selected_path.into_iter().collect::<Vec<_>>();
+        self.set_selection_paths(&selection)
+    }
+
+    /// Update the currently highlighted prim set in Hydra.
+    pub fn set_selection_paths(&self, selected_paths: &[&str]) -> Result<(), DuError> {
+        let c_paths = selected_paths
+            .iter()
+            .map(|path| {
+                CString::new(*path).map_err(|_| {
+                    DuError::Invalid("Selection path contains an interior NUL byte".into())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let path_ptrs = c_paths.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
+        unsafe {
+            check(dreamusd_sys::du_hydra_set_selection_paths(
+                self.raw,
+                path_ptrs.as_ptr(),
+                path_ptrs.len() as u32,
+            ))
+        }
     }
 
     /// Poll the renderer for asynchronous updates.

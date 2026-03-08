@@ -93,6 +93,7 @@ DuStatus du_prim_reparent(DuPrim* prim, const char* new_parent_path);
 DuStatus du_prim_get_type_name(DuPrim* prim, const char** out);
 DuStatus du_prim_get_path(DuPrim* prim, const char** out);
 DuStatus du_prim_get_name(DuPrim* prim, const char** out);
+DuStatus du_prim_get_world_bounds(DuPrim* prim, double min_xyz[3], double max_xyz[3]);
 
 // --- Transform ---
 DuStatus du_xform_get_local(DuPrim* prim, double matrix[16]);
@@ -193,6 +194,11 @@ DuStatus du_hydra_pick(
     const char** out_path
 );
 DuStatus du_hydra_set_selection(DuHydraEngine* engine, const char* selected_path);
+DuStatus du_hydra_set_selection_paths(
+    DuHydraEngine* engine,
+    const char* const* selected_paths,
+    uint32_t count
+);
 DuStatus du_hydra_poll_async_updates(DuHydraEngine* engine, bool* changed);
 void     du_hydra_destroy(DuHydraEngine* engine);
 

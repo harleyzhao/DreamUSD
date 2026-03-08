@@ -174,25 +174,59 @@ impl DreamUsdApp {
         let Some(stage) = self.stage.as_ref() else {
             return;
         };
-        let Some(selected_path) = self.hierarchy.selected_path.clone() else {
+        let mut selected_paths = self.hierarchy.selected_paths_snapshot();
+        if selected_paths.is_empty() {
             return;
-        };
-        if selected_path == "/" {
+        }
+
+        selected_paths.sort();
+        selected_paths.dedup();
+        selected_paths.retain(|path| path != "/");
+        if selected_paths.is_empty() {
             self.status_message = "Cannot delete the pseudo-root".to_string();
             return;
         }
 
-        let _ = stage.undo_begin();
-        match stage.remove_prim(&selected_path) {
-            Ok(()) => {
-                let _ = stage.undo_end();
-                self.hierarchy.selected_path = None;
-                self.clear_viewport_texture();
-                self.status_message = format!("Deleted: {selected_path}");
+        let mut filtered = Vec::new();
+        for path in selected_paths {
+            let has_selected_ancestor = filtered.iter().any(|ancestor: &String| {
+                path.strip_prefix(ancestor)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+            });
+            if !has_selected_ancestor {
+                filtered.push(path);
             }
-            Err(e) => {
-                let _ = stage.undo_end();
-                self.status_message = format!("Delete failed: {e}");
+        }
+
+        let _ = stage.undo_begin();
+        let mut failures = Vec::new();
+        for path in &filtered {
+            if let Err(err) = stage.remove_prim(path) {
+                failures.push(format!("{path}: {err}"));
+            }
+        }
+        let _ = stage.undo_end();
+
+        if failures.is_empty() {
+            self.hierarchy.clear_selection();
+            self.clear_viewport_texture();
+            self.status_message = if filtered.len() == 1 {
+                format!("Deleted: {}", filtered[0])
+            } else {
+                format!("Deleted {} prims", filtered.len())
+            };
+        } else {
+            if filtered.len() != failures.len() {
+                self.hierarchy.clear_selection();
+                self.clear_viewport_texture();
+            }
+            self.status_message = if failures.len() == 1 {
+                format!("Delete failed: {}", failures[0])
+            } else {
+                format!("Delete completed with {} failures", failures.len())
+            };
+            for failure in failures {
+                tracing::error!("{failure}");
             }
         }
     }

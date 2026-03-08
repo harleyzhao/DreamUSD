@@ -13,15 +13,106 @@
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usdGeom/xformCommonAPI.h>
+#include <pxr/usd/usdGeom/xformOp.h>
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
+#include <pxr/base/gf/vec3h.h>
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
 // Forward declaration — DuPrim defined in prim.cpp
 struct DuPrim;
 extern UsdPrim du_prim_get_usd(DuPrim* prim);
+
+static UsdGeomXformOp _DuFindEditableTranslateOp(const UsdGeomXformable& xformable) {
+    const TfToken baseTranslateName =
+        UsdGeomXformOp::GetOpName(UsdGeomXformOp::TypeTranslate);
+    UsdGeomXformOp firstNonPivotTranslate;
+
+    bool resetsXformStack = false;
+    const auto ops = xformable.GetOrderedXformOps(&resetsXformStack);
+    for (const UsdGeomXformOp& op : ops) {
+        if (!op || op.IsInverseOp()) {
+            continue;
+        }
+        if (op.GetOpType() == UsdGeomXformOp::TypeTranslate) {
+            // Prefer the canonical xformOp:translate entry and never treat
+            // xformOp:translate:pivot as the editable translation channel.
+            if (op.GetOpName() == baseTranslateName) {
+                return op;
+            }
+            if (!op.HasSuffix(UsdGeomTokens->pivot) && !firstNonPivotTranslate) {
+                firstNonPivotTranslate = op;
+            }
+        }
+    }
+    return firstNonPivotTranslate;
+}
+
+static bool _DuSetTranslateOnOp(
+    const UsdGeomXformOp& translateOp,
+    const GfVec3d& translate)
+{
+    if (!translateOp) {
+        return false;
+    }
+    switch (translateOp.GetPrecision()) {
+        case UsdGeomXformOp::PrecisionFloat:
+            return translateOp.Set<GfVec3f>(GfVec3f(translate), UsdTimeCode::Default());
+        case UsdGeomXformOp::PrecisionHalf:
+            return translateOp.Set<GfVec3h>(GfVec3h(translate), UsdTimeCode::Default());
+        case UsdGeomXformOp::PrecisionDouble:
+        default:
+            return translateOp.Set<GfVec3d>(translate, UsdTimeCode::Default());
+    }
+}
+
+static bool _DuGetDirectTranslate(
+    const UsdGeomXformable& xformable,
+    GfVec3d* outTranslate)
+{
+    const UsdGeomXformOp translateOp = _DuFindEditableTranslateOp(xformable);
+    if (!translateOp) {
+        return false;
+    }
+    return translateOp.GetAs<GfVec3d>(outTranslate, UsdTimeCode::Default());
+}
+
+static bool _DuSetDirectTranslate(
+    const UsdGeomXformable& xformable,
+    const GfVec3d& translate)
+{
+    const UsdGeomXformOp translateOp = _DuFindEditableTranslateOp(xformable);
+    if (!translateOp) {
+        return false;
+    }
+    return _DuSetTranslateOnOp(translateOp, translate);
+}
+
+static bool _DuCreateAndSetTranslate(
+    const UsdGeomXformable& xformable,
+    const GfVec3d& translate)
+{
+    UsdGeomXformOp::Precision precision = UsdGeomXformOp::PrecisionDouble;
+    bool resetsXformStack = false;
+    const auto ops = xformable.GetOrderedXformOps(&resetsXformStack);
+    for (const UsdGeomXformOp& op : ops) {
+        if (!op || op.IsInverseOp()) {
+            continue;
+        }
+        if (op.GetOpType() == UsdGeomXformOp::TypeTranslate) {
+            precision = op.GetPrecision();
+            break;
+        }
+    }
+
+    const UsdGeomXformOp createdOp = xformable.AddTranslateOp(precision);
+    if (!createdOp) {
+        return false;
+    }
+    return _DuSetTranslateOnOp(createdOp, translate);
+}
 
 extern "C" {
 
@@ -69,19 +160,21 @@ static DuStatus du_xform_get_trs(
     DU_CHECK_NULL(prim);
     DU_CHECK_NULL(xyz);
 
-    UsdGeomXformCommonAPI api(du_prim_get_usd(prim));
-    if (!api) {
-        du_set_last_error("Cannot create XformCommonAPI for prim");
-        return DU_ERR_INVALID;
-    }
-
     GfVec3d translation(0.0);
     GfVec3f rotation(0.0f);
     GfVec3f scale(1.0f);
     GfVec3f pivot(0.0f);
     UsdGeomXformCommonAPI::RotationOrder rotationOrder;
+    UsdGeomXformCommonAPI api(du_prim_get_usd(prim));
 
     if (!api.GetXformVectors(
+            &translation,
+            &rotation,
+            &scale,
+            &pivot,
+            &rotationOrder,
+            UsdTimeCode::Default())
+        && !api.GetXformVectorsByAccumulation(
             &translation,
             &rotation,
             &scale,
@@ -110,6 +203,23 @@ static DuStatus du_xform_get_trs(
 }
 
 DuStatus du_xform_get_translate(DuPrim* prim, double xyz[3]) {
+    DU_CHECK_NULL(prim);
+    DU_CHECK_NULL(xyz);
+
+    UsdGeomXformable xformable(du_prim_get_usd(prim));
+    if (!xformable) {
+        du_set_last_error("Prim is not Xformable");
+        return DU_ERR_INVALID;
+    }
+
+    GfVec3d translate(0.0);
+    if (_DuGetDirectTranslate(xformable, &translate)) {
+        xyz[0] = translate[0];
+        xyz[1] = translate[1];
+        xyz[2] = translate[2];
+        return DU_OK;
+    }
+
     return du_xform_get_trs(prim, xyz, 0);
 }
 
@@ -121,19 +231,21 @@ DuStatus du_xform_get_rotate_order(DuPrim* prim, int32_t* order) {
     DU_CHECK_NULL(prim);
     DU_CHECK_NULL(order);
 
-    UsdGeomXformCommonAPI api(du_prim_get_usd(prim));
-    if (!api) {
-        du_set_last_error("Cannot create XformCommonAPI for prim");
-        return DU_ERR_INVALID;
-    }
-
     GfVec3d translation(0.0);
     GfVec3f rotation(0.0f);
     GfVec3f scale(1.0f);
     GfVec3f pivot(0.0f);
     UsdGeomXformCommonAPI::RotationOrder rotationOrder;
+    UsdGeomXformCommonAPI api(du_prim_get_usd(prim));
 
     if (!api.GetXformVectors(
+            &translation,
+            &rotation,
+            &scale,
+            &pivot,
+            &rotationOrder,
+            UsdTimeCode::Default())
+        && !api.GetXformVectorsByAccumulation(
             &translation,
             &rotation,
             &scale,
@@ -156,19 +268,21 @@ DuStatus du_xform_get_pivot(DuPrim* prim, double xyz[3]) {
     DU_CHECK_NULL(prim);
     DU_CHECK_NULL(xyz);
 
-    UsdGeomXformCommonAPI api(du_prim_get_usd(prim));
-    if (!api) {
-        du_set_last_error("Cannot create XformCommonAPI for prim");
-        return DU_ERR_INVALID;
-    }
-
     GfVec3d translation(0.0);
     GfVec3f rotation(0.0f);
     GfVec3f scale(1.0f);
     GfVec3f pivot(0.0f);
     UsdGeomXformCommonAPI::RotationOrder rotationOrder;
+    UsdGeomXformCommonAPI api(du_prim_get_usd(prim));
 
     if (!api.GetXformVectors(
+            &translation,
+            &rotation,
+            &scale,
+            &pivot,
+            &rotationOrder,
+            UsdTimeCode::Default())
+        && !api.GetXformVectorsByAccumulation(
             &translation,
             &rotation,
             &scale,
@@ -214,22 +328,31 @@ DuStatus du_xform_get_world_pivot(DuPrim* prim, double xyz[3]) {
 DuStatus du_xform_set_translate(DuPrim* prim, double x, double y, double z) {
     DU_CHECK_NULL(prim);
 
-    UsdGeomXformCommonAPI api(du_prim_get_usd(prim));
-    if (!api) {
-        du_set_last_error("Cannot create XformCommonAPI for prim");
+    UsdGeomXformable xformable(du_prim_get_usd(prim));
+    if (!xformable) {
+        du_set_last_error("Prim is not Xformable");
         return DU_ERR_INVALID;
     }
-    api.SetTranslate(GfVec3d(x, y, z));
-    return DU_OK;
+
+    if (_DuSetDirectTranslate(xformable, GfVec3d(x, y, z))) {
+        return DU_OK;
+    }
+
+    if (_DuCreateAndSetTranslate(xformable, GfVec3d(x, y, z))) {
+        return DU_OK;
+    }
+
+    du_set_last_error("Failed to author translate op");
+    return DU_ERR_USD;
 }
 
 DuStatus du_xform_set_translate_world(DuPrim* prim, double x, double y, double z) {
     DU_CHECK_NULL(prim);
 
     UsdPrim usdPrim = du_prim_get_usd(prim);
-    UsdGeomXformCommonAPI api(usdPrim);
-    if (!api) {
-        du_set_last_error("Cannot create XformCommonAPI for prim");
+    UsdGeomXformable xformable(usdPrim);
+    if (!xformable) {
+        du_set_last_error("Prim is not Xformable");
         return DU_ERR_INVALID;
     }
 
@@ -244,8 +367,16 @@ DuStatus du_xform_set_translate_world(DuPrim* prim, double x, double y, double z
         }
     }
 
-    api.SetTranslate(localPos);
-    return DU_OK;
+    if (_DuSetDirectTranslate(xformable, localPos)) {
+        return DU_OK;
+    }
+
+    if (_DuCreateAndSetTranslate(xformable, localPos)) {
+        return DU_OK;
+    }
+
+    du_set_last_error("Failed to author translate op");
+    return DU_ERR_USD;
 }
 
 DuStatus du_xform_set_rotate(DuPrim* prim, double x, double y, double z) {

@@ -29,10 +29,8 @@ impl DreamUsdApp {
         let selection_target = self
             .hierarchy
             .selected_path
-            .as_deref()
-            .and_then(|path| self.resolve_transform_target_path(path))
-            .or_else(|| self.hierarchy.selected_path.clone());
-        let _ = hydra.set_selection(selection_target.as_deref());
+            .as_deref();
+        let _ = hydra.set_selection(selection_target);
 
         let (_, mode) = DISPLAY_MODES[self.current_display_mode];
         let (_, complexity) = super::VIEWPORT_COMPLEXITIES[self.current_complexity];

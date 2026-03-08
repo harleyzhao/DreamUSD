@@ -5,6 +5,11 @@ use dreamusd_core::{Prim, Stage};
 use dreamusd_render::glam::Vec3;
 
 impl DreamUsdApp {
+    pub(super) fn resolve_gizmo_target_path(&self, selected_path: &str) -> String {
+        self.resolve_transform_target_path(selected_path)
+            .unwrap_or_else(|| selected_path.to_string())
+    }
+
     pub(super) fn resolve_transform_target_path(&self, selected_path: &str) -> Option<String> {
         let stage = self.stage.as_ref()?;
         let prim = find_prim_recursive(stage, selected_path)?;
@@ -48,7 +53,7 @@ impl DreamUsdApp {
                         .and_then(|stage| find_prim_recursive(stage, &path))
                     {
                         if self.matches_pick_filter(&prim) {
-                            return self.resolve_transform_target_path(&path).or(Some(path));
+                            return Some(path);
                         }
                     }
                 }
@@ -56,7 +61,6 @@ impl DreamUsdApp {
         }
 
         self.pick_prim_at_screen(rect, pointer_pos)
-            .and_then(|path| self.resolve_transform_target_path(&path).or(Some(path)))
     }
 
     pub(super) fn pick_prim_at_screen(
@@ -110,7 +114,7 @@ impl DreamUsdApp {
         }
     }
 
-    fn matches_pick_filter(&self, prim: &Prim) -> bool {
+    pub(super) fn matches_pick_filter(&self, prim: &Prim) -> bool {
         matches_pick_filter(prim, self.pick_filter)
     }
 }

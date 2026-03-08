@@ -121,6 +121,11 @@ extern "C" {
     pub fn du_prim_get_type_name(prim: *mut DuPrim, out: *mut *const c_char) -> DuStatus;
     pub fn du_prim_get_path(prim: *mut DuPrim, out: *mut *const c_char) -> DuStatus;
     pub fn du_prim_get_name(prim: *mut DuPrim, out: *mut *const c_char) -> DuStatus;
+    pub fn du_prim_get_world_bounds(
+        prim: *mut DuPrim,
+        min_xyz: *mut f64,
+        max_xyz: *mut f64,
+    ) -> DuStatus;
 
     // --- Transform ---
     pub fn du_xform_get_local(prim: *mut DuPrim, matrix: *mut f64) -> DuStatus;
@@ -293,6 +298,11 @@ extern "C" {
     pub fn du_hydra_set_selection(
         engine: *mut DuHydraEngine,
         selected_path: *const c_char,
+    ) -> DuStatus;
+    pub fn du_hydra_set_selection_paths(
+        engine: *mut DuHydraEngine,
+        selected_paths: *const *const c_char,
+        count: u32,
     ) -> DuStatus;
     pub fn du_hydra_poll_async_updates(
         engine: *mut DuHydraEngine,

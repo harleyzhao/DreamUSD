@@ -835,7 +835,7 @@ struct DuHydraEngine {
     HdRprimCollection currentCollection;
     DuDisplayMode displayMode = DU_DISPLAY_SMOOTH_SHADED;
     UsdImagingGLRenderParams renderParams;
-    std::string selectedPath;
+    SdfPathVector selectedPaths;
     bool msaaEnabled = true;
     float complexity = 1.0f;
     bool showGuides = false;
@@ -1243,7 +1243,7 @@ static void _DuSyncRenderParams(DuHydraEngine* engine) {
     engine->renderParams.enableSampleAlphaToCoverage = engine->msaaEnabled;
     engine->renderParams.applyRenderState = true;
     engine->renderParams.gammaCorrectColors = false;
-    engine->renderParams.highlight = !engine->selectedPath.empty();
+    engine->renderParams.highlight = !engine->selectedPaths.empty();
     engine->renderParams.overrideColor = GfVec4f(0.0f);
     engine->renderParams.wireframeColor = GfVec4f(0.0f);
     engine->renderParams.alphaThreshold = -1.0f;
@@ -2559,6 +2559,19 @@ DuStatus du_hydra_pick(
 }
 
 DuStatus du_hydra_set_selection(DuHydraEngine* engine, const char* selected_path) {
+    const char* selection[] = {selected_path};
+    return du_hydra_set_selection_paths(
+        engine,
+        selected_path ? selection : nullptr,
+        selected_path ? 1u : 0u
+    );
+}
+
+DuStatus du_hydra_set_selection_paths(
+    DuHydraEngine* engine,
+    const char* const* selected_paths,
+    uint32_t count
+) {
     DU_CHECK_NULL(engine);
 
     DU_TRY({
@@ -2567,17 +2580,32 @@ DuStatus du_hydra_set_selection(DuHydraEngine* engine, const char* selected_path
             return DU_ERR_INVALID;
         }
 
-        engine->selectedPath.clear();
+        SdfPathVector nextSelectedPaths;
+        nextSelectedPaths.reserve(count);
 
-        if (selected_path && selected_path[0] != '\0') {
+        for (uint32_t i = 0; i < count; ++i) {
+            const char* selected_path = selected_paths ? selected_paths[i] : nullptr;
+            if (!selected_path || selected_path[0] == '\0') {
+                continue;
+            }
+
             const SdfPath usdPath(selected_path);
             if (!usdPath.IsAbsolutePath() || usdPath.IsPropertyPath()) {
                 du_set_last_error("Selection path must be an absolute prim path");
                 return DU_ERR_INVALID;
             }
 
-            engine->selectedPath = usdPath.GetString();
-            engine->glEngine->SetSelected({usdPath});
+            nextSelectedPaths.push_back(usdPath);
+        }
+
+        if (nextSelectedPaths == engine->selectedPaths) {
+            return DU_OK;
+        }
+
+        engine->selectedPaths = std::move(nextSelectedPaths);
+
+        if (!engine->selectedPaths.empty()) {
+            engine->glEngine->SetSelected(engine->selectedPaths);
         } else {
             engine->glEngine->ClearSelected();
         }
@@ -2672,8 +2700,8 @@ DuStatus du_rd_set_current(DuHydraEngine* engine, const char* name) {
         engine->glEngine->SetSelectionColor(GfVec4f(1.0f, 1.0f, 0.0f, 0.5f));
         engine->viewerLightDelegate.reset();
         _DuEnsureViewerLightDelegate(engine);
-        if (!engine->selectedPath.empty()) {
-            engine->glEngine->SetSelected({SdfPath(engine->selectedPath)});
+        if (!engine->selectedPaths.empty()) {
+            engine->glEngine->SetSelected(engine->selectedPaths);
         } else {
             engine->glEngine->ClearSelected();
         }
@@ -3001,6 +3029,11 @@ DuStatus du_hydra_pick(DuHydraEngine*, double, double, uint32_t, uint32_t, const
 }
 
 DuStatus du_hydra_set_selection(DuHydraEngine*, const char*) {
+    du_set_last_error("USD not available (stub build)");
+    return DU_ERR_INVALID;
+}
+
+DuStatus du_hydra_set_selection_paths(DuHydraEngine*, const char* const*, uint32_t) {
     du_set_last_error("USD not available (stub build)");
     return DU_ERR_INVALID;
 }
