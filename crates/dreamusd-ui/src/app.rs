@@ -2408,30 +2408,31 @@ impl eframe::App for DreamUsdApp {
             .frame(crate::theme::toolbar_frame())
             .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("Open        Ctrl+O").clicked() {
+                let ml = |s: &str| egui::RichText::new(s).color(crate::theme::text_color());
+                ui.menu_button(ml("File"), |ui| {
+                    if ui.button(ml("Open        Ctrl+O")).clicked() {
                         self.open_file();
                         ui.close_menu();
                     }
-                    if ui.button("Save        Ctrl+S").clicked() {
+                    if ui.button(ml("Save        Ctrl+S")).clicked() {
                         self.save_file();
                         ui.close_menu();
                     }
-                    if ui.button("Save As     Ctrl+Shift+S").clicked() {
+                    if ui.button(ml("Save As     Ctrl+Shift+S")).clicked() {
                         self.save_file_as();
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Quit").clicked() {
+                    if ui.button(ml("Quit")).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
-                ui.menu_button("Edit", |ui| {
-                    if ui.button("Undo    Ctrl+Z").clicked() {
+                ui.menu_button(ml("Edit"), |ui| {
+                    if ui.button(ml("Undo    Ctrl+Z")).clicked() {
                         self.undo();
                         ui.close_menu();
                     }
-                    if ui.button("Redo    Ctrl+Shift+Z").clicked() {
+                    if ui.button(ml("Redo    Ctrl+Shift+Z")).clicked() {
                         self.redo();
                         ui.close_menu();
                     }
